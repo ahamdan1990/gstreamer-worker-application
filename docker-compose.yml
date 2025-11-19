@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database for Camera Management
+  postgres:
+    image: postgres:16-alpine
+    container_name: camera-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: camera_manager
+    ports:
+      - "5433:5432"  # Use 5433 to avoid conflict with CompreFace PostgreSQL
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - camera-network
+    restart: unless-stopped
+
+  # Redis (for background tasks)
+  redis:
+    image: redis:7-alpine
+    container_name: camera-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - camera-network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: camera-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/camera_manager
+      REDIS_URL: redis://redis:6379/0
+      WORKER_API_URL: http://host.docker.internal:8081  # C++ worker running on host
+      COMPREFACE_URL: ${COMPREFACE_URL:-http://host.docker.internal:8000}
+      COMPREFACE_API_KEY: ${COMPREFACE_API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - camera-network
+    restart: unless-stopped
+
+  # C++ GStreamer Worker
+  worker:
+    build:
+      context: ./gstreamer_worker
+      dockerfile: Dockerfile
+    container_name: camera-worker
+    runtime: nvidia  # Requires NVIDIA Container Toolkit
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      DISPLAY: ${DISPLAY:-:0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./gstreamer_worker/config:/app/config
+    ports:
+      - "8081:8081"
+    networks:
+      - camera-network
+    restart: unless-stopped
+    privileged: true  # For X11 display access
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads:
+
+networks:
+  camera-network:
+    driver: bridge
