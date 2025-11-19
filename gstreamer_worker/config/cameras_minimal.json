@@ -1,0 +1,15 @@
+{
+  "manager": {
+    "log_level": "INFO"
+  },
+  "cameras": [
+    {
+      "camera_id": "camera_1",
+      "rtsp_url": "rtsp://service:WSS4Sec$$@192.168.0.219"
+    },
+    {
+      "camera_id": "camera_2",
+      "rtsp_url": "rtsp://service:WSS4Sec$$@192.168.0.83"
+    }
+  ]
+}

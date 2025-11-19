@@ -1,0 +1,140 @@
+cmake_minimum_required(VERSION 3.16)
+project(GStreamerWorker VERSION 1.0.0 LANGUAGES CXX)
+
+# C++ Standard
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Compiler flags
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG")
+
+# Find packages
+find_package(PkgConfig REQUIRED)
+
+# GStreamer
+pkg_check_modules(GSTREAMER REQUIRED
+    gstreamer-1.0>=1.14
+    gstreamer-video-1.0>=1.14
+    gstreamer-rtsp-1.0>=1.14
+)
+
+# GLib
+pkg_check_modules(GLIB REQUIRED glib-2.0>=2.56)
+
+# Threads
+find_package(Threads REQUIRED)
+
+# Enable FetchContent for downloading dependencies
+include(FetchContent)
+
+# nlohmann/json (header-only)
+# Try to find system package first, fallback to fetching
+find_package(nlohmann_json 3.2.0 QUIET)
+if(NOT nlohmann_json_FOUND)
+    message(STATUS "nlohmann/json not found, fetching from GitHub...")
+    FetchContent_Declare(json
+        URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    )
+    FetchContent_MakeAvailable(json)
+endif()
+
+# cpp-httplib (header-only HTTP server)
+FetchContent_Declare(httplib
+    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.14.3.tar.gz
+)
+FetchContent_MakeAvailable(httplib)
+
+# Include directories
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${GSTREAMER_INCLUDE_DIRS}
+    ${GLIB_INCLUDE_DIRS}
+)
+
+# Link directories
+link_directories(
+    ${GSTREAMER_LIBRARY_DIRS}
+    ${GLIB_LIBRARY_DIRS}
+)
+
+# Source files
+set(SOURCES
+    src/camera_stream.cpp
+    src/pipeline_manager.cpp
+    src/config.cpp
+    src/config_loader.cpp
+    src/logger.cpp
+)
+
+# API Server sources
+set(API_SOURCES
+    src/api_server.cpp
+)
+
+# Headers
+set(HEADERS
+    include/camera_stream.h
+    include/pipeline_manager.h
+    include/config.h
+    include/config_loader.h
+    include/logger.h
+    include/types.h
+    include/api_server.h
+)
+
+# Create library
+add_library(gstreamer_worker_lib STATIC ${SOURCES} ${HEADERS})
+target_link_libraries(gstreamer_worker_lib
+    ${GSTREAMER_LIBRARIES}
+    ${GLIB_LIBRARIES}
+    Threads::Threads
+    nlohmann_json::nlohmann_json
+)
+
+# Main executable (single camera)
+add_executable(gstreamer_worker src/main.cpp)
+target_link_libraries(gstreamer_worker
+    gstreamer_worker_lib
+    ${GSTREAMER_LIBRARIES}
+    ${GLIB_LIBRARIES}
+    Threads::Threads
+    nlohmann_json::nlohmann_json
+)
+
+# Multi-camera executable (with config file support)
+add_executable(gstreamer_worker_multi src/main_multi.cpp)
+target_link_libraries(gstreamer_worker_multi
+    gstreamer_worker_lib
+    ${GSTREAMER_LIBRARIES}
+    ${GLIB_LIBRARIES}
+    Threads::Threads
+    nlohmann_json::nlohmann_json
+)
+
+# API Server executable (with REST API)
+add_executable(gstreamer_worker_api src/main_api.cpp ${API_SOURCES})
+target_link_libraries(gstreamer_worker_api
+    gstreamer_worker_lib
+    ${GSTREAMER_LIBRARIES}
+    ${GLIB_LIBRARIES}
+    Threads::Threads
+    nlohmann_json::nlohmann_json
+    httplib::httplib
+)
+
+# Install targets
+install(TARGETS gstreamer_worker gstreamer_worker_multi gstreamer_worker_api
+    RUNTIME DESTINATION bin
+)
+
+# Print configuration
+message(STATUS "")
+message(STATUS "GStreamer Worker Configuration:")
+message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  GStreamer: ${GSTREAMER_VERSION}")
+message(STATUS "  Install Prefix: ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "")

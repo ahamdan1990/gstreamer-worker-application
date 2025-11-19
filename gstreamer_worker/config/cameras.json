@@ -1,0 +1,51 @@
+{
+  "manager": {
+    "log_level": "INFO",
+    "enable_metrics": true,
+    "metrics_interval": 30.0
+  },
+  "cameras": [
+    {
+      "camera_id": "front_door",
+      "rtsp_url": "rtsp://192.168.0.219/stream1",
+      "username": "service",
+      "password": "WSS4Sec$$",
+      "protocols": "tcp",
+      "latency_ms": 150,
+      "drop_on_latency": true,
+      "target_fps": 12,
+      "enable_display": true,
+      "display_sync": false,
+      "auto_reconnect": true,
+      "max_reconnect_attempts": -1,
+      "reconnect_initial_delay": 1.0,
+      "reconnect_max_delay": 60.0,
+      "reconnect_backoff_multiplier": 2.0,
+      "health_check_interval": 5.0,
+      "max_consecutive_errors": 5,
+      "use_nvidia_decoder": true
+    },
+    {
+      "camera_id": "back_door",
+      "rtsp_url": "rtsp://192.168.0.220/stream1",
+      "username": "admin",
+      "password": "admin123",
+      "protocols": "tcp",
+      "latency_ms": 150,
+      "target_fps": 12,
+      "enable_display": true,
+      "use_nvidia_decoder": true
+    },
+    {
+      "camera_id": "parking_lot",
+      "rtsp_url": "rtsp://192.168.0.221/stream1",
+      "username": "admin",
+      "password": "admin123",
+      "protocols": "tcp",
+      "latency_ms": 200,
+      "target_fps": 10,
+      "enable_display": true,
+      "use_nvidia_decoder": true
+    }
+  ]
+}
