@@ -18,7 +18,6 @@ Makefile
 *.so
 *.a
 *.out
-gstreamer_worker
 
 # IDE
 .vscode/
