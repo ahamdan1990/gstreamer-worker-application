@@ -53,7 +53,3 @@ __pycache__/
 venv/
 backend/venv/
 .env/
-
-# Build / temp
-*.log
-*.tmp
