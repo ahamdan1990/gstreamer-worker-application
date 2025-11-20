@@ -36,9 +36,7 @@ Thumbs.db
 .directory
 
 # Core dumps
-core
-core.*
-vgcore.*
+
 
 # Debugging
 .gdb_history
