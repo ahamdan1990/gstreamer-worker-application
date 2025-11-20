@@ -42,3 +42,18 @@ vgcore.*
 
 # Debugging
 .gdb_history
+
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual envs
+venv/
+backend/venv/
+.env/
+
+# Build / temp
+*.log
+*.tmp
