@@ -5,6 +5,7 @@
 #include "types.h"
 
 #include <gst/gst.h>
+#include <gst/app/gstappsink.h>
 #include <memory>
 #include <atomic>
 #include <thread>
@@ -13,6 +14,9 @@
 #include <functional>
 
 namespace gstreamer_worker {
+
+// Forward declarations
+class MotionDetector;
 
 /**
  * @brief Callback for state changes
@@ -23,6 +27,11 @@ using StateCallback = std::function<void(const std::string& camera_id, StreamSta
  * @brief Callback for errors
  */
 using ErrorCallback = std::function<void(const std::string& camera_id, const std::string& error)>;
+
+/**
+ * @brief Callback for motion events
+ */
+using MotionEventCallback = std::function<void(const MotionEvent& event)>;
 
 /**
  * @brief Individual camera stream handler with production-grade error handling
@@ -42,11 +51,13 @@ public:
      * @param config Camera configuration
      * @param on_state_changed Callback for state changes
      * @param on_error Callback for errors
+     * @param on_motion Callback for motion events
      */
     CameraStream(
         const CameraConfig& config,
         StateCallback on_state_changed = nullptr,
-        ErrorCallback on_error = nullptr
+        ErrorCallback on_error = nullptr,
+        MotionEventCallback on_motion = nullptr
     );
 
     /**
@@ -92,6 +103,21 @@ public:
      */
     std::string get_camera_id() const { return config_.camera_id; }
 
+    /**
+     * @brief Enable or disable motion detection at runtime
+     */
+    void enable_motion_detection(bool enable);
+
+    /**
+     * @brief Check if motion detection is enabled
+     */
+    bool is_motion_detection_enabled() const;
+
+    /**
+     * @brief Update motion detection configuration
+     */
+    void update_motion_config(const MotionDetectionConfig& config);
+
 private:
     // Configuration
     CameraConfig config_;
@@ -100,11 +126,17 @@ private:
     // Callbacks
     StateCallback on_state_changed_;
     ErrorCallback on_error_;
+    MotionEventCallback on_motion_;
 
     // GStreamer components
     GstElement* pipeline_ = nullptr;
+    GstElement* appsink_ = nullptr;  // For motion detection frame capture
     GstBus* bus_ = nullptr;
     GMainLoop* loop_ = nullptr;
+
+    // Motion detection
+    std::unique_ptr<MotionDetector> motion_detector_;
+    std::atomic<bool> motion_detection_enabled_;
 
     // State management
     std::atomic<StreamState> state_;
@@ -176,6 +208,11 @@ private:
      * @brief Set stream state and trigger callback
      */
     void set_state(StreamState new_state);
+
+    /**
+     * @brief Process frame for motion detection
+     */
+    void process_motion_frame(GstSample* sample);
 };
 
 } // namespace gstreamer_worker

@@ -3,11 +3,26 @@
 
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
 
 namespace gstreamer_worker {
+
+// Helper function to convert string to MotionAlgorithm
+static MotionAlgorithm string_to_motion_algorithm(const std::string& str) {
+    std::string upper_str = str;
+    std::transform(upper_str.begin(), upper_str.end(), upper_str.begin(), ::toupper);
+
+    if (upper_str == "MOG2_CUDA") return MotionAlgorithm::MOG2_CUDA;
+    if (upper_str == "MOG2") return MotionAlgorithm::MOG2;
+    if (upper_str == "KNN") return MotionAlgorithm::KNN;
+    if (upper_str == "FRAME_DIFF") return MotionAlgorithm::FRAME_DIFF;
+
+    // Default to MOG2_CUDA
+    return MotionAlgorithm::MOG2_CUDA;
+}
 
 bool ConfigLoader::load_from_file(
     const std::string& file_path,
@@ -79,6 +94,38 @@ bool ConfigLoader::save_to_file(
             }
             if (!cam.password.empty()) {
                 cam_json["password"] = cam.password;
+            }
+
+            // Motion detection configuration
+            if (cam.motion_detection.enabled) {
+                json motion_json = {
+                    {"enabled", cam.motion_detection.enabled},
+                    {"algorithm", motion_algorithm_to_string(cam.motion_detection.algorithm)},
+                    {"sensitivity", cam.motion_detection.sensitivity},
+                    {"min_contour_area", cam.motion_detection.min_contour_area},
+                    {"max_contours", cam.motion_detection.max_contours},
+                    {"frame_skip", cam.motion_detection.frame_skip},
+                    {"blur_size", cam.motion_detection.blur_size},
+                    {"history", cam.motion_detection.history},
+                    {"var_threshold", cam.motion_detection.var_threshold},
+                    {"detect_shadows", cam.motion_detection.detect_shadows},
+                    {"cooldown_seconds", cam.motion_detection.cooldown_seconds},
+                    {"required_frames", cam.motion_detection.required_frames},
+                    {"max_frame_width", cam.motion_detection.max_frame_width},
+                    {"max_frame_height", cam.motion_detection.max_frame_height}
+                };
+
+                // Add ROI if configured
+                if (cam.motion_detection.roi.is_valid()) {
+                    motion_json["roi"] = {
+                        {"x", cam.motion_detection.roi.x},
+                        {"y", cam.motion_detection.roi.y},
+                        {"width", cam.motion_detection.roi.width},
+                        {"height", cam.motion_detection.roi.height}
+                    };
+                }
+
+                cam_json["motion_detection"] = motion_json;
             }
 
             j["cameras"].push_back(cam_json);
@@ -187,6 +234,80 @@ bool ConfigLoader::load_from_string(
                 }
                 if (cam_json.contains("use_nvidia_decoder")) {
                     cam.use_nvidia_decoder = cam_json["use_nvidia_decoder"].get<bool>();
+                }
+
+                // Motion detection configuration
+                if (cam_json.contains("motion_detection")) {
+                    const auto& motion_json = cam_json["motion_detection"];
+
+                    if (motion_json.contains("enabled")) {
+                        cam.motion_detection.enabled = motion_json["enabled"].get<bool>();
+                    }
+                    if (motion_json.contains("algorithm")) {
+                        std::string algo_str = motion_json["algorithm"].get<std::string>();
+                        cam.motion_detection.algorithm = string_to_motion_algorithm(algo_str);
+                    }
+                    if (motion_json.contains("sensitivity")) {
+                        cam.motion_detection.sensitivity = motion_json["sensitivity"].get<double>();
+                    }
+                    if (motion_json.contains("min_contour_area")) {
+                        cam.motion_detection.min_contour_area = motion_json["min_contour_area"].get<int>();
+                    }
+                    if (motion_json.contains("max_contours")) {
+                        cam.motion_detection.max_contours = motion_json["max_contours"].get<int>();
+                    }
+                    if (motion_json.contains("frame_skip")) {
+                        cam.motion_detection.frame_skip = motion_json["frame_skip"].get<int>();
+                    }
+                    if (motion_json.contains("blur_size")) {
+                        cam.motion_detection.blur_size = motion_json["blur_size"].get<int>();
+                    }
+                    if (motion_json.contains("history")) {
+                        cam.motion_detection.history = motion_json["history"].get<int>();
+                    }
+                    if (motion_json.contains("var_threshold")) {
+                        cam.motion_detection.var_threshold = motion_json["var_threshold"].get<double>();
+                    }
+                    if (motion_json.contains("detect_shadows")) {
+                        cam.motion_detection.detect_shadows = motion_json["detect_shadows"].get<bool>();
+                    }
+                    if (motion_json.contains("cooldown_seconds")) {
+                        cam.motion_detection.cooldown_seconds = motion_json["cooldown_seconds"].get<double>();
+                    }
+                    if (motion_json.contains("required_frames")) {
+                        cam.motion_detection.required_frames = motion_json["required_frames"].get<int>();
+                    }
+                    if (motion_json.contains("max_frame_width")) {
+                        cam.motion_detection.max_frame_width = motion_json["max_frame_width"].get<int>();
+                    }
+                    if (motion_json.contains("max_frame_height")) {
+                        cam.motion_detection.max_frame_height = motion_json["max_frame_height"].get<int>();
+                    }
+
+                    // ROI configuration
+                    if (motion_json.contains("roi")) {
+                        const auto& roi_json = motion_json["roi"];
+                        if (roi_json.contains("x")) {
+                            cam.motion_detection.roi.x = roi_json["x"].get<int>();
+                        }
+                        if (roi_json.contains("y")) {
+                            cam.motion_detection.roi.y = roi_json["y"].get<int>();
+                        }
+                        if (roi_json.contains("width")) {
+                            cam.motion_detection.roi.width = roi_json["width"].get<int>();
+                        }
+                        if (roi_json.contains("height")) {
+                            cam.motion_detection.roi.height = roi_json["height"].get<int>();
+                        }
+                    }
+
+                    // Validate motion detection config
+                    if (!cam.motion_detection.validate()) {
+                        LOG_WARNING("ConfigLoader",
+                            "Invalid motion detection config for camera " + cam.camera_id +
+                            ", disabling motion detection");
+                        cam.motion_detection.enabled = false;
+                    }
                 }
 
                 // Validate

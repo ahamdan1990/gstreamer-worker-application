@@ -1,10 +1,60 @@
 #ifndef GSTREAMER_WORKER_CONFIG_H
 #define GSTREAMER_WORKER_CONFIG_H
 
+#include "types.h"
 #include <string>
 #include <memory>
 
 namespace gstreamer_worker {
+
+/**
+ * @brief Motion detection configuration
+ */
+struct MotionDetectionConfig {
+    // Enable/disable motion detection
+    bool enabled = false;
+
+    // Algorithm selection
+    MotionAlgorithm algorithm = MotionAlgorithm::MOG2_CUDA;
+
+    // Detection sensitivity
+    double sensitivity = 0.5;  // 0.0 to 1.0, higher = more sensitive
+    int min_contour_area = 500;  // Minimum area in pixels to consider as motion
+    int max_contours = 50;  // Maximum number of contours to process
+
+    // Frame processing
+    int frame_skip = 2;  // Process every Nth frame (1 = every frame, 2 = every other frame)
+    int blur_size = 21;  // Gaussian blur kernel size for noise reduction
+
+    // Background subtraction parameters (for MOG2/KNN)
+    int history = 500;  // Number of last frames that affect the background model
+    double var_threshold = 16.0;  // Threshold on the squared Mahalanobis distance
+    bool detect_shadows = false;  // Detect and mark shadows (slower but more accurate)
+
+    // Region of Interest (optional - if width/height are 0, uses full frame)
+    MotionROI roi;
+
+    // Event debouncing
+    double cooldown_seconds = 1.0;  // Minimum time between motion events
+    int required_frames = 3;  // Number of consecutive frames with motion to trigger event
+
+    // Performance
+    int max_frame_width = 640;  // Resize frame to this width for analysis (0 = no resize)
+    int max_frame_height = 480;  // Resize frame to this height for analysis (0 = no resize)
+
+    /**
+     * @brief Validate configuration
+     */
+    bool validate() const {
+        if (sensitivity < 0.0 || sensitivity > 1.0) return false;
+        if (min_contour_area < 0) return false;
+        if (frame_skip < 1) return false;
+        if (blur_size < 1 || blur_size % 2 == 0) return false;
+        if (cooldown_seconds < 0.0) return false;
+        if (required_frames < 1) return false;
+        return true;
+    }
+};
 
 /**
  * @brief Configuration for a single camera stream
@@ -39,6 +89,9 @@ struct CameraConfig {
 
     // Hardware acceleration
     bool use_nvidia_decoder = true;
+
+    // Motion detection
+    MotionDetectionConfig motion_detection;
 
     /**
      * @brief Get RTSP URL with credentials if provided

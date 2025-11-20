@@ -19,10 +19,39 @@ pkg_check_modules(GSTREAMER REQUIRED
     gstreamer-1.0>=1.14
     gstreamer-video-1.0>=1.14
     gstreamer-rtsp-1.0>=1.14
+    gstreamer-app-1.0>=1.14
 )
 
 # GLib
 pkg_check_modules(GLIB REQUIRED glib-2.0>=2.56)
+
+# OpenCV with CUDA support
+find_package(OpenCV 4.0 REQUIRED
+    COMPONENTS
+        core
+        imgproc
+        video
+        cudabgsegm
+        cudaimgproc
+        cudawarping
+        cudafilters
+        cudaarithm
+)
+
+if(OpenCV_FOUND)
+    message(STATUS "OpenCV version: ${OpenCV_VERSION}")
+    message(STATUS "OpenCV include dirs: ${OpenCV_INCLUDE_DIRS}")
+    message(STATUS "OpenCV libraries: ${OpenCV_LIBS}")
+
+    # Check if CUDA modules are available
+    if(OpenCV_CUDA_VERSION)
+        message(STATUS "OpenCV CUDA support: YES (${OpenCV_CUDA_VERSION})")
+    else()
+        message(WARNING "OpenCV found but CUDA support not detected. Motion detection will use CPU.")
+    endif()
+else()
+    message(FATAL_ERROR "OpenCV not found. Please install OpenCV with CUDA support.")
+endif()
 
 # Threads
 find_package(Threads REQUIRED)
@@ -52,6 +81,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${GSTREAMER_INCLUDE_DIRS}
     ${GLIB_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
 )
 
 # Link directories
@@ -67,6 +97,7 @@ set(SOURCES
     src/config.cpp
     src/config_loader.cpp
     src/logger.cpp
+    src/motion_detector.cpp
 )
 
 # API Server sources
@@ -83,6 +114,7 @@ set(HEADERS
     include/logger.h
     include/types.h
     include/api_server.h
+    include/motion_detector.h
 )
 
 # Create library
@@ -90,6 +122,7 @@ add_library(gstreamer_worker_lib STATIC ${SOURCES} ${HEADERS})
 target_link_libraries(gstreamer_worker_lib
     ${GSTREAMER_LIBRARIES}
     ${GLIB_LIBRARIES}
+    ${OpenCV_LIBS}
     Threads::Threads
     nlohmann_json::nlohmann_json
 )
@@ -100,6 +133,7 @@ target_link_libraries(gstreamer_worker
     gstreamer_worker_lib
     ${GSTREAMER_LIBRARIES}
     ${GLIB_LIBRARIES}
+    ${OpenCV_LIBS}
     Threads::Threads
     nlohmann_json::nlohmann_json
 )
@@ -110,6 +144,7 @@ target_link_libraries(gstreamer_worker_multi
     gstreamer_worker_lib
     ${GSTREAMER_LIBRARIES}
     ${GLIB_LIBRARIES}
+    ${OpenCV_LIBS}
     Threads::Threads
     nlohmann_json::nlohmann_json
 )
@@ -120,6 +155,7 @@ target_link_libraries(gstreamer_worker_api
     gstreamer_worker_lib
     ${GSTREAMER_LIBRARIES}
     ${GLIB_LIBRARIES}
+    ${OpenCV_LIBS}
     Threads::Threads
     nlohmann_json::nlohmann_json
     httplib::httplib

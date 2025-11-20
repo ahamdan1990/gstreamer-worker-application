@@ -7,7 +7,7 @@
   "cameras": [
     {
       "camera_id": "front_door",
-      "rtsp_url": "rtsp://192.168.0.219/stream1",
+      "rtsp_url": "rtsp://192.168.0.219",
       "username": "service",
       "password": "WSS4Sec$$",
       "protocols": "tcp",
@@ -23,29 +23,23 @@
       "reconnect_backoff_multiplier": 2.0,
       "health_check_interval": 5.0,
       "max_consecutive_errors": 5,
-      "use_nvidia_decoder": true
-    },
-    {
-      "camera_id": "back_door",
-      "rtsp_url": "rtsp://192.168.0.220/stream1",
-      "username": "admin",
-      "password": "admin123",
-      "protocols": "tcp",
-      "latency_ms": 150,
-      "target_fps": 12,
-      "enable_display": true,
-      "use_nvidia_decoder": true
-    },
-    {
-      "camera_id": "parking_lot",
-      "rtsp_url": "rtsp://192.168.0.221/stream1",
-      "username": "admin",
-      "password": "admin123",
-      "protocols": "tcp",
-      "latency_ms": 200,
-      "target_fps": 10,
-      "enable_display": true,
-      "use_nvidia_decoder": true
+      "use_nvidia_decoder": true,
+      "motion_detection": {
+        "enabled": true,
+        "algorithm": "MOG2_CUDA",
+        "sensitivity": 0.5,
+        "min_contour_area": 500,
+        "max_contours": 50,
+        "frame_skip": 2,
+        "blur_size": 21,
+        "history": 500,
+        "var_threshold": 16.0,
+        "detect_shadows": false,
+        "cooldown_seconds": 1.0,
+        "required_frames": 3,
+        "max_frame_width": 640,
+        "max_frame_height": 480
+      }
     }
   ]
 }

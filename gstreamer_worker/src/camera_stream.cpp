@@ -1,5 +1,9 @@
 #include "camera_stream.h"
+#include "motion_detector.h"
 #include "logger.h"
+
+#include <gst/app/gstappsink.h>
+#include <opencv2/opencv.hpp>
 
 #include <sstream>
 #include <chrono>
@@ -10,12 +14,15 @@ namespace gstreamer_worker {
 CameraStream::CameraStream(
     const CameraConfig& config,
     StateCallback on_state_changed,
-    ErrorCallback on_error
+    ErrorCallback on_error,
+    MotionEventCallback on_motion
 )
     : config_(config)
     , log_tag_("CameraStream." + config.camera_id)
     , on_state_changed_(std::move(on_state_changed))
     , on_error_(std::move(on_error))
+    , on_motion_(std::move(on_motion))
+    , motion_detection_enabled_(false)
     , state_(StreamState::STOPPED)
     , running_(false)
     , reconnect_attempts_(0)
@@ -25,6 +32,33 @@ CameraStream::CameraStream(
     if (!config_.validate()) {
         LOG_ERROR(log_tag_, "Invalid configuration");
         throw std::invalid_argument("Invalid camera configuration");
+    }
+
+    // Initialize motion detector if enabled
+    if (config_.motion_detection.enabled) {
+        try {
+            motion_detector_ = std::make_unique<MotionDetector>(
+                config_.camera_id,
+                config_.motion_detection,
+                [this](const MotionEvent& event) {
+                    // Motion event callback
+                    {
+                        std::lock_guard<std::mutex> lock(metrics_mutex_);
+                        metrics_.motion_events_detected++;
+                        metrics_.last_motion_timestamp = event.timestamp;
+                    }
+
+                    // Forward to user callback
+                    if (on_motion_) {
+                        on_motion_(event);
+                    }
+                }
+            );
+            motion_detection_enabled_ = true;
+            LOG_INFO(log_tag_, "Motion detection initialized");
+        } catch (const std::exception& e) {
+            LOG_ERROR(log_tag_, std::string("Failed to initialize motion detection: ") + e.what());
+        }
     }
 
     LOG_INFO(log_tag_, "Camera stream created");
@@ -262,6 +296,40 @@ bool CameraStream::create_pipeline() {
         bus_ = gst_element_get_bus(pipeline_);
         gst_bus_add_watch(bus_, bus_message_callback, this);
 
+        // Set up appsink if motion detection is enabled
+        if (config_.motion_detection.enabled && motion_detector_) {
+            appsink_ = gst_bin_get_by_name(GST_BIN(pipeline_), "motion_sink");
+            if (appsink_) {
+                // Set appsink properties
+                g_object_set(G_OBJECT(appsink_),
+                           "emit-signals", TRUE,   // Use signals (more stable than callbacks)
+                           "sync", FALSE,          // Don't sync with clock
+                           "drop", TRUE,           // Drop frames if processing is slow
+                           "max-buffers", 2,       // Keep buffer queue small
+                           nullptr);
+
+                // Connect to new-sample signal
+                g_signal_connect(appsink_, "new-sample",
+                               G_CALLBACK(+[](GstElement* sink, gpointer user_data) -> GstFlowReturn {
+                                   auto* stream = static_cast<CameraStream*>(user_data);
+                                   if (!stream || !stream->motion_detection_enabled_.load()) {
+                                       return GST_FLOW_OK;
+                                   }
+
+                                   GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
+                                   if (sample) {
+                                       stream->process_motion_frame(sample);
+                                       gst_sample_unref(sample);
+                                   }
+                                   return GST_FLOW_OK;
+                               }), this);
+
+                LOG_INFO(log_tag_, "Motion detection appsink configured");
+            } else {
+                LOG_WARNING(log_tag_, "Could not find motion_sink element");
+            }
+        }
+
         // Start pipeline
         GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
         if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -310,22 +378,52 @@ std::string CameraStream::build_pipeline_description() const {
            << " ! video/x-raw,format=I420,framerate=" << config_.target_fps << "/1";
     }
 
-    // Display
-    if (config_.enable_display) {
+    // Add tee if motion detection is enabled
+    if (config_.motion_detection.enabled) {
+        ss << " ! tee name=t";
+
+        // Motion detection branch - convert to BGR for OpenCV
+        // Use appropriate converter based on decoder type
         if (config_.use_nvidia_decoder) {
-            ss << " ! nveglglessink sync=" << (config_.display_sync ? "true" : "false");
+            // For NVIDIA: nvvideoconvert can handle NVMM → system memory + format conversion
+            ss << " t. ! queue max-size-buffers=2 leaky=downstream ! nvvideoconvert"
+               << " ! video/x-raw,format=BGR ! appsink name=motion_sink max-buffers=2 drop=true";
         } else {
-            ss << " ! autovideosink sync=" << (config_.display_sync ? "true" : "false");
+            // For CPU: use standard videoconvert
+            ss << " t. ! queue max-size-buffers=2 leaky=downstream ! videoconvert"
+               << " ! video/x-raw,format=BGR ! appsink name=motion_sink max-buffers=2 drop=true";
+        }
+
+        // Display/output branch
+        ss << " t. ! queue max-size-buffers=10 leaky=downstream";
+
+        if (config_.enable_display) {
+            if (config_.use_nvidia_decoder) {
+                ss << " ! nveglglessink sync=" << (config_.display_sync ? "true" : "false");
+            } else {
+                ss << " ! autovideosink sync=" << (config_.display_sync ? "true" : "false");
+            }
+        } else {
+            ss << " ! fakesink sync=false";
         }
     } else {
-        ss << " ! fakesink sync=false";
+        // No motion detection - direct to display
+        if (config_.enable_display) {
+            if (config_.use_nvidia_decoder) {
+                ss << " ! nveglglessink sync=" << (config_.display_sync ? "true" : "false");
+            } else {
+                ss << " ! autovideosink sync=" << (config_.display_sync ? "true" : "false");
+            }
+        } else {
+            ss << " ! fakesink sync=false";
+        }
     }
 
     return ss.str();
 }
 
 gboolean CameraStream::bus_message_callback(
-    GstBus* bus,
+    GstBus* /* bus */,
     GstMessage* message,
     gpointer user_data
 ) {
@@ -497,21 +595,27 @@ void CameraStream::cleanup_pipeline() {
         }
     }
 
-    // 2. Stop and cleanup GStreamer pipeline
+    // 2. Clean up appsink
+    if (appsink_) {
+        gst_object_unref(appsink_);
+        appsink_ = nullptr;
+    }
+
+    // 3. Stop and cleanup GStreamer pipeline
     if (pipeline_) {
         gst_element_set_state(pipeline_, GST_STATE_NULL);
         gst_object_unref(pipeline_);
         pipeline_ = nullptr;
     }
 
-    // 3. Cleanup bus
+    // 4. Cleanup bus
     if (bus_) {
         gst_bus_remove_watch(bus_);
         gst_object_unref(bus_);
         bus_ = nullptr;
     }
 
-    // 4. Finally unref the loop (after it's no longer running)
+    // 5. Finally unref the loop (after it's no longer running)
     if (loop_) {
         g_main_loop_unref(loop_);
         loop_ = nullptr;
@@ -530,6 +634,99 @@ void CameraStream::set_state(StreamState new_state) {
             on_state_changed_(config_.camera_id, new_state);
         }
     }
+}
+
+void CameraStream::process_motion_frame(GstSample* sample) {
+    if (!motion_detector_ || !motion_detection_enabled_.load()) {
+        return;
+    }
+
+    try {
+        // Get buffer from sample
+        GstBuffer* buffer = gst_sample_get_buffer(sample);
+        if (!buffer) {
+            return;
+        }
+
+        // Get caps to determine frame dimensions
+        GstCaps* caps = gst_sample_get_caps(sample);
+        if (!caps) {
+            return;
+        }
+
+        GstStructure* structure = gst_caps_get_structure(caps, 0);
+        int width, height;
+        if (!gst_structure_get_int(structure, "width", &width) ||
+            !gst_structure_get_int(structure, "height", &height)) {
+            return;
+        }
+
+        // Map buffer to access data
+        GstMapInfo map;
+        if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+            return;
+        }
+
+        // Create OpenCV Mat from buffer data (BGR format) and make a deep copy
+        // IMPORTANT: We must clone the frame because:
+        // 1. The original Mat is just a view into GStreamer's buffer memory
+        // 2. CUDA operations require properly allocated, continuous memory
+        // 3. GStreamer's buffer must be unmapped quickly to avoid blocking the pipeline
+        cv::Mat frame_view(height, width, CV_8UC3, map.data);
+        cv::Mat frame = frame_view.clone();  // Deep copy into OpenCV's own memory
+
+        // Unmap buffer immediately after cloning (don't hold it during processing)
+        gst_buffer_unmap(buffer, &map);
+
+        // Process the cloned frame for motion detection
+        motion_detector_->process_frame(frame);
+
+        // Update metrics
+        {
+            std::lock_guard<std::mutex> lock(metrics_mutex_);
+            metrics_.frames_analyzed++;
+
+            // Update motion detection FPS
+            auto stats = motion_detector_->get_statistics();
+            metrics_.motion_detection_fps = stats.current_fps;
+        }
+
+    } catch (const std::exception& e) {
+        LOG_ERROR(log_tag_, std::string("Error processing motion frame: ") + e.what());
+    }
+}
+
+void CameraStream::enable_motion_detection(bool enable) {
+    if (!motion_detector_) {
+        LOG_WARNING(log_tag_, "Motion detector not initialized");
+        return;
+    }
+
+    bool was_enabled = motion_detection_enabled_.exchange(enable);
+    if (was_enabled != enable) {
+        LOG_INFO(log_tag_, std::string("Motion detection ") +
+                 (enable ? "enabled" : "disabled"));
+
+        if (enable) {
+            // Reset motion detector when enabling
+            motion_detector_->reset();
+        }
+    }
+}
+
+bool CameraStream::is_motion_detection_enabled() const {
+    return motion_detection_enabled_.load();
+}
+
+void CameraStream::update_motion_config(const MotionDetectionConfig& config) {
+    if (!motion_detector_) {
+        LOG_WARNING(log_tag_, "Motion detector not initialized");
+        return;
+    }
+
+    motion_detector_->update_config(config);
+    config_.motion_detection = config;
+    LOG_INFO(log_tag_, "Motion detection configuration updated");
 }
 
 } // namespace gstreamer_worker

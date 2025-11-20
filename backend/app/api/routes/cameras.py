@@ -64,13 +64,27 @@ async def create_camera(
         )
 
     # Create camera in database
-    camera = Camera(**camera_data.model_dump())
+    camera_dict = camera_data.model_dump()
+
+    # Handle motion detection separately
+    motion_config = camera_dict.pop('motion_detection', None)
+    if motion_config:
+        camera_dict['motion_detection_enabled'] = motion_config.get('enabled', False)
+        camera_dict['motion_detection_config'] = motion_config
+
+    camera = Camera(**camera_dict)
     db.add(camera)
     await db.commit()
     await db.refresh(camera)
 
     # Add camera to worker (but don't start it yet)
     try:
+        # Build motion detection config if enabled
+        worker_motion_config = None
+        if camera.motion_detection_enabled and camera.motion_detection_config:
+            from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
+            worker_motion_config = WorkerMotionConfig(**camera.motion_detection_config)
+
         worker_config = WorkerCameraConfig(
             camera_id=camera.camera_id,
             rtsp_url=camera.rtsp_url,
@@ -80,9 +94,11 @@ async def create_camera(
             latency_ms=camera.latency_ms,
             target_fps=camera.target_fps,
             enable_display=camera.enable_display,
-            use_nvidia_decoder=camera.use_nvidia_decoder
+            use_nvidia_decoder=camera.use_nvidia_decoder,
+            motion_detection=worker_motion_config
         )
-        await worker.add_camera(worker_config)
+        # Use add_or_update for idempotent operation
+        await worker.add_or_update_camera(worker_config)
         logger.info(f"Added camera {camera.camera_id} to worker")
     except Exception as e:
         logger.error(f"Failed to add camera to worker: {e}")
@@ -117,7 +133,8 @@ async def get_camera(
 async def update_camera(
     camera_id: str,
     camera_update: CameraUpdate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    worker: WorkerClient = Depends(get_worker_client)
 ):
     """Update camera configuration"""
     result = await db.execute(
@@ -131,13 +148,64 @@ async def update_camera(
             detail=f"Camera '{camera_id}' not found"
         )
 
+    # Track if camera was running before update
+    was_running = camera.is_running
+
     # Update only provided fields
     update_data = camera_update.model_dump(exclude_unset=True)
+
+    # Handle motion detection separately
+    motion_config = update_data.pop('motion_detection', None)
+    if motion_config is not None:
+        camera.motion_detection_enabled = motion_config.get('enabled', False)
+        camera.motion_detection_config = motion_config
+
+    # Update other fields
     for field, value in update_data.items():
         setattr(camera, field, value)
 
     await db.commit()
     await db.refresh(camera)
+
+    logger.info(f"Updated camera {camera_id} in database")
+
+    # Sync updated configuration to worker
+    try:
+        # Build motion detection config if enabled
+        worker_motion_config = None
+        if camera.motion_detection_enabled and camera.motion_detection_config:
+            from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
+            worker_motion_config = WorkerMotionConfig(**camera.motion_detection_config)
+
+        worker_config = WorkerCameraConfig(
+            camera_id=camera.camera_id,
+            rtsp_url=camera.rtsp_url,
+            username=camera.username,
+            password=camera.password,
+            protocols=camera.protocols,
+            latency_ms=camera.latency_ms,
+            target_fps=camera.target_fps,
+            enable_display=camera.enable_display,
+            use_nvidia_decoder=camera.use_nvidia_decoder,
+            motion_detection=worker_motion_config
+        )
+
+        # Update worker configuration (add or update)
+        await worker.add_or_update_camera(worker_config)
+        logger.info(f"Synced updated configuration to worker for camera {camera_id}")
+
+        # If camera was running, restart it to apply changes
+        if was_running:
+            logger.info(f"Restarting camera {camera_id} to apply configuration changes")
+            await worker.stop_camera(camera_id)
+            await worker.start_camera(camera_id)
+            camera.is_running = True
+            await db.commit()
+
+    except Exception as e:
+        logger.error(f"Failed to sync camera configuration to worker: {e}")
+        # Don't fail the request - configuration is updated in database
+        # Worker will get updated config on next sync
 
     return camera
 
@@ -272,7 +340,9 @@ async def get_camera_status(
     db: AsyncSession = Depends(get_db),
     worker: WorkerClient = Depends(get_worker_client)
 ):
-    """Get real-time camera status from worker"""
+    """Get real-time camera status from worker with motion detection metrics"""
+    from app.schemas.camera import CameraMetrics, MotionDetectionMetrics
+
     result = await db.execute(
         select(Camera).where(Camera.camera_id == camera_id)
     )
@@ -293,11 +363,34 @@ async def get_camera_status(
         camera.is_running = worker_status.is_running
         await db.commit()
 
+        # Parse metrics from worker
+        worker_metrics = worker_status.metrics
+        motion_metrics = None
+
+        # Extract motion detection metrics if present
+        if 'frames_analyzed' in worker_metrics and worker_metrics['frames_analyzed'] > 0:
+            motion_metrics = MotionDetectionMetrics(
+                frames_analyzed=worker_metrics.get('frames_analyzed', 0),
+                motion_events_detected=worker_metrics.get('motion_events_detected', 0),
+                motion_detection_fps=worker_metrics.get('motion_detection_fps', 0.0),
+                last_motion_timestamp=worker_metrics.get('last_motion_timestamp')
+            )
+
+        # Build complete metrics
+        metrics = CameraMetrics(
+            uptime_seconds=worker_metrics.get('uptime_seconds', 0.0),
+            errors_count=worker_metrics.get('errors_count', 0),
+            reconnections=worker_metrics.get('reconnections', 0),
+            frames_displayed=worker_metrics.get('frames_displayed', 0),
+            motion=motion_metrics
+        )
+
         return CameraStatus(
             camera_id=camera.camera_id,
             state=worker_status.state,
             is_running=worker_status.is_running,
-            last_seen_at=camera.last_seen_at
+            last_seen_at=camera.last_seen_at,
+            metrics=metrics
         )
     except Exception as e:
         logger.error(f"Failed to get camera status: {e}")
@@ -306,5 +399,6 @@ async def get_camera_status(
             camera_id=camera.camera_id,
             state=camera.state,
             is_running=camera.is_running,
-            last_seen_at=camera.last_seen_at
+            last_seen_at=camera.last_seen_at,
+            metrics=None
         )

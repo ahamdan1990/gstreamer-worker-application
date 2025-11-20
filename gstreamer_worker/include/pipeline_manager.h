@@ -33,11 +33,13 @@ public:
      * @param config Manager configuration
      * @param on_state_changed Global callback for state changes
      * @param on_error Global callback for errors
+     * @param on_motion Global callback for motion events
      */
     PipelineManager(
         const PipelineManagerConfig& config = PipelineManagerConfig(),
         StateCallback on_state_changed = nullptr,
-        ErrorCallback on_error = nullptr
+        ErrorCallback on_error = nullptr,
+        MotionEventCallback on_motion = nullptr
     );
 
     /**
@@ -141,6 +143,7 @@ private:
     // Callbacks
     StateCallback on_state_changed_;
     ErrorCallback on_error_;
+    MotionEventCallback on_motion_;
 
     // Camera streams
     std::map<std::string, std::unique_ptr<CameraStream>> streams_;

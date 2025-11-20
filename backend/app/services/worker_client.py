@@ -7,6 +7,25 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel
 
 
+class MotionDetectionConfig(BaseModel):
+    """Motion detection configuration"""
+    enabled: bool = False
+    algorithm: str = "MOG2_CUDA"
+    sensitivity: float = 0.5
+    min_contour_area: int = 500
+    max_contours: int = 50
+    frame_skip: int = 2
+    blur_size: int = 21
+    history: int = 500
+    var_threshold: float = 16.0
+    detect_shadows: bool = False
+    cooldown_seconds: float = 1.0
+    required_frames: int = 3
+    max_frame_width: int = 640
+    max_frame_height: int = 480
+    roi: Optional[Dict] = None
+
+
 class WorkerCameraConfig(BaseModel):
     """Configuration for adding a camera to the worker"""
     camera_id: str
@@ -18,6 +37,7 @@ class WorkerCameraConfig(BaseModel):
     target_fps: int = 12
     enable_display: bool = False  # Disable display in production
     use_nvidia_decoder: bool = True
+    motion_detection: Optional[MotionDetectionConfig] = None
 
 
 class WorkerCameraStatus(BaseModel):
@@ -70,6 +90,28 @@ class WorkerClient:
             )
             response.raise_for_status()
             return response.json()
+
+    async def update_camera(self, camera_id: str, config: WorkerCameraConfig) -> Dict:
+        """Update camera configuration in worker by removing and re-adding it"""
+        # Worker doesn't have PUT endpoint, so we remove and re-add
+        try:
+            await self.remove_camera(camera_id)
+        except Exception:
+            pass  # Camera might not exist, that's okay
+
+        # Add with new configuration
+        return await self.add_camera(config)
+
+    async def add_or_update_camera(self, config: WorkerCameraConfig) -> Dict:
+        """Add camera if doesn't exist, update if it does (idempotent operation)"""
+        try:
+            # Try to add first
+            return await self.add_camera(config)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                # Camera already exists, update by removing and re-adding
+                return await self.update_camera(config.camera_id, config)
+            raise
 
     async def start_camera(self, camera_id: str) -> Dict:
         """Start a camera stream"""

@@ -7,6 +7,25 @@ from pydantic import BaseModel, Field
 from uuid import UUID
 
 
+class MotionDetectionConfig(BaseModel):
+    """Motion detection configuration schema"""
+    enabled: bool = False
+    algorithm: str = "MOG2_CUDA"  # MOG2_CUDA, MOG2, KNN, FRAME_DIFF
+    sensitivity: float = Field(0.5, ge=0.0, le=1.0)
+    min_contour_area: int = Field(500, ge=0)
+    max_contours: int = Field(50, ge=1)
+    frame_skip: int = Field(2, ge=0)
+    blur_size: int = Field(21, ge=1)  # Must be odd
+    history: int = Field(500, ge=1)
+    var_threshold: float = Field(16.0, ge=0.0)
+    detect_shadows: bool = False
+    cooldown_seconds: float = Field(1.0, ge=0.0)
+    required_frames: int = Field(3, ge=1)
+    max_frame_width: int = Field(640, ge=0)
+    max_frame_height: int = Field(480, ge=0)
+    roi: Optional[Dict[str, int]] = None  # {x, y, width, height}
+
+
 class CameraBase(BaseModel):
     camera_id: str = Field(..., min_length=1, max_length=255)
     name: str = Field(..., min_length=1, max_length=255)
@@ -27,6 +46,7 @@ class CameraBase(BaseModel):
     location: Optional[str] = None
     tags: Optional[Dict[str, Any]] = None
     extra_metadata: Optional[Dict[str, Any]] = None
+    motion_detection: Optional[MotionDetectionConfig] = None
 
 
 class CameraCreate(CameraBase):
@@ -50,6 +70,7 @@ class CameraUpdate(BaseModel):
     location: Optional[str] = None
     tags: Optional[Dict[str, Any]] = None
     extra_metadata: Optional[Dict[str, Any]] = None
+    motion_detection: Optional[MotionDetectionConfig] = None
 
 
 class CameraResponse(CameraBase):
@@ -65,12 +86,30 @@ class CameraResponse(CameraBase):
         from_attributes = True
 
 
+class MotionDetectionMetrics(BaseModel):
+    """Motion detection metrics"""
+    frames_analyzed: int = 0
+    motion_events_detected: int = 0
+    motion_detection_fps: float = 0.0
+    last_motion_timestamp: Optional[float] = None
+
+
+class CameraMetrics(BaseModel):
+    """Camera performance metrics"""
+    uptime_seconds: float = 0.0
+    errors_count: int = 0
+    reconnections: int = 0
+    frames_displayed: int = 0
+    motion: Optional[MotionDetectionMetrics] = None
+
+
 class CameraStatus(BaseModel):
     """Camera status response"""
     camera_id: str
     state: str
     is_running: bool
     last_seen_at: Optional[datetime] = None
+    metrics: Optional[CameraMetrics] = None
 
 
 class CameraControl(BaseModel):

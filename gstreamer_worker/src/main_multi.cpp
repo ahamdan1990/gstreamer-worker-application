@@ -7,6 +7,7 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <iomanip>
 
 using namespace gstreamer_worker;
 
@@ -31,6 +32,24 @@ void on_state_changed(const std::string& camera_id, StreamState state) {
 void on_error(const std::string& camera_id, const std::string& error) {
     // Custom error handling
     // Example: Send alert, log to monitoring system, etc.
+}
+
+// Motion event callback
+void on_motion_detected(const MotionEvent& event) {
+    // Log motion event with detailed information
+    std::stringstream ss;
+    ss << "\n╔══════════════════════════════════════════════╗\n";
+    ss << "║         MOTION DETECTED                      ║\n";
+    ss << "╠══════════════════════════════════════════════╣\n";
+    ss << "║ Camera: " << std::left << std::setw(35) << event.camera_id << "║\n";
+    ss << "║ Motion Area: " << std::setw(30) << (std::to_string(event.motion_area) + " pixels") << "║\n";
+    ss << "║ Contours: " << std::setw(33) << event.num_contours << "║\n";
+    ss << "║ Confidence: " << std::setw(31) << std::fixed << std::setprecision(2) << (event.confidence * 100.0) << "%" << "║\n";
+    ss << "║ Bounding Box: [" << event.bounding_box.x << "," << event.bounding_box.y
+       << " " << event.bounding_box.width << "x" << event.bounding_box.height << "]" << std::setw(10) << "║\n";
+    ss << "╚══════════════════════════════════════════════╝\n";
+
+    LOG_INFO("MotionEvent", ss.str());
 }
 
 void print_usage(const char* program_name) {
@@ -203,7 +222,7 @@ int main(int argc, char* argv[]) {
         std::cout << "\nPress Ctrl+C to stop\n" << std::endl;
 
         // Create pipeline manager
-        PipelineManager manager(manager_config, on_state_changed, on_error);
+        PipelineManager manager(manager_config, on_state_changed, on_error, on_motion_detected);
 
         // Add all cameras
         auto add_results = manager.add_cameras(cameras);

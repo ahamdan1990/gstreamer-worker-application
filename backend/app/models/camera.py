@@ -49,6 +49,10 @@ class Camera(Base):
     # Hardware
     use_nvidia_decoder = Column(Boolean, default=True)
 
+    # Motion Detection Configuration (stored as JSON)
+    motion_detection_enabled = Column(Boolean, default=False)
+    motion_detection_config = Column(JSON)  # Full motion detection configuration
+
     # Status
     enabled = Column(Boolean, default=True)
     state = Column(String(50), default="STOPPED")  # STOPPED, STARTING, RUNNING, ERROR, RECONNECTING
