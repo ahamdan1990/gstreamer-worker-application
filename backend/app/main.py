@@ -49,6 +49,8 @@ logger.addHandler(file_handler)
 worker_process = None
 ws_client: Optional[WorkerWebSocketClient] = None
 sync_lock = asyncio.Lock()  # Prevent concurrent sync operations
+monitor_task: Optional[asyncio.Task] = None
+should_monitor = True
 
 
 async def start_worker_process():
@@ -139,6 +141,59 @@ async def stop_worker_process():
         logger.error(f"Error stopping worker process: {e}")
     finally:
         worker_process = None
+
+
+async def monitor_worker_health():
+    """
+    Background task to monitor worker process health and restart if needed.
+    Only runs if WORKER_AUTO_RESTART is enabled.
+    """
+    global worker_process, should_monitor
+
+    if not settings.WORKER_AUTO_RESTART:
+        logger.info("Worker auto-restart is disabled")
+        return
+
+    logger.info("Starting worker health monitor (checking every 10 seconds)")
+
+    while should_monitor:
+        try:
+            await asyncio.sleep(10)  # Check every 10 seconds
+
+            if not should_monitor:
+                break
+
+            # Check if worker process is still alive
+            if worker_process is not None:
+                poll_result = worker_process.poll()
+                if poll_result is not None:
+                    # Process has exited
+                    logger.error(f"Worker process died with exit code {poll_result}. Restarting...")
+
+                    # Try to restart
+                    success = await start_worker_process()
+                    if success:
+                        logger.info("Worker successfully restarted")
+                        # Wait for worker to initialize
+                        await asyncio.sleep(2)
+                        # Re-sync cameras
+                        await sync_cameras_to_worker()
+                        # Restart WebSocket connection
+                        if ws_client:
+                            await ws_client.stop()
+                            await asyncio.sleep(1)
+                            await ws_client.start()
+                    else:
+                        logger.error("Failed to restart worker, will retry on next check")
+            else:
+                # Worker process object is None, try to start it
+                logger.warning("Worker process is None, attempting to start...")
+                await start_worker_process()
+
+        except Exception as e:
+            logger.error(f"Error in worker health monitor: {e}", exc_info=True)
+            # Continue monitoring even if there's an error
+            await asyncio.sleep(5)
 
 
 async def initialize_websocket_client():
@@ -247,7 +302,7 @@ async def sync_cameras_to_worker():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    global ws_client
+    global ws_client, monitor_task, should_monitor
 
     # Startup: Start worker process
     logger.info("=" * 60)
@@ -272,9 +327,14 @@ async def lifespan(app: FastAPI):
     # Wait for WebSocket to connect
     await asyncio.sleep(1)
 
+    # Start worker health monitor
+    should_monitor = True
+    monitor_task = asyncio.create_task(monitor_worker_health())
+
     logger.info("=" * 60)
     logger.info("FastAPI Application Ready")
     logger.info(f"WebSocket connected: {ws_client.is_connected() if ws_client else False}")
+    logger.info(f"Worker auto-restart: {settings.WORKER_AUTO_RESTART}")
     logger.info("=" * 60)
 
     yield
@@ -283,6 +343,15 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info("FastAPI Application Shutting Down")
     logger.info("=" * 60)
+
+    # Stop health monitor
+    should_monitor = False
+    if monitor_task and not monitor_task.done():
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
 
     # Stop WebSocket client
     if ws_client:
@@ -432,6 +501,38 @@ async def motion_event_webhook(event: MotionEventWebhook):
     except Exception as e:
         logger.error(f"Failed to store motion event: {e}")
         return {"status": "error", "message": str(e)}
+
+
+# System status endpoint
+@app.get(f"{settings.API_PREFIX}/system/status")
+async def get_system_status():
+    """
+    Get system-wide status including total cameras and running count.
+    Used by frontend dashboard for overview stats.
+    """
+    try:
+        # Get database session
+        async for db in get_db():
+            result = await db.execute(select(Camera))
+            cameras = result.scalars().all()
+
+            total_cameras = len(cameras)
+            running_cameras = sum(1 for cam in cameras if cam.is_running)
+
+            return {
+                "running": True,  # System is running if we can respond
+                "total_cameras": total_cameras,
+                "running_cameras": running_cameras,
+                "timestamp": int(time.time())
+            }
+    except Exception as e:
+        logger.error(f"Failed to get system status: {e}")
+        return {
+            "running": False,
+            "total_cameras": 0,
+            "running_cameras": 0,
+            "timestamp": int(time.time())
+        }
 
 
 # Import and include routers

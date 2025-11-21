@@ -69,22 +69,26 @@ class WorkerWebSocketClient:
     async def stop(self):
         """Stop the WebSocket client gracefully"""
         logger.info("Stopping WebSocket client...")
-        self.running = False
 
+        # Signal the client to stop (prevents reconnection attempts)
+        self.running = False
+        self.connected = False
+
+        # Close the WebSocket connection if open
         if self.websocket:
             try:
                 await self.websocket.close()
-            except Exception as e:
-                logger.error(f"Error closing WebSocket: {e}")
+            except Exception:
+                pass  # Connection might already be closed
 
-        if self.task:
+        # Wait for the task to finish (with timeout)
+        if self.task and not self.task.done():
             self.task.cancel()
             try:
-                await self.task
-            except asyncio.CancelledError:
-                pass
+                await asyncio.wait_for(self.task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass  # Task cancelled or timeout, that's fine
 
-        self.connected = False
         logger.info("WebSocket client stopped")
 
     async def _run(self):
@@ -111,19 +115,22 @@ class WorkerWebSocketClient:
                         await self._handle_message(message)
 
             except ConnectionClosed as e:
-                logger.warning(f"WebSocket connection closed: {e.code} - {e.reason}")
                 self.connected = False
-                await self._reconnect()
+                if self.running:
+                    logger.warning(f"WebSocket connection closed: {e.code} - {e.reason}")
+                    await self._reconnect()
 
             except WebSocketException as e:
-                logger.error(f"WebSocket exception: {e}")
                 self.connected = False
-                await self._reconnect()
+                if self.running:
+                    logger.error(f"WebSocket exception: {e}")
+                    await self._reconnect()
 
             except Exception as e:
-                logger.error(f"Unexpected WebSocket error: {e}", exc_info=True)
                 self.connected = False
-                await self._reconnect()
+                if self.running:
+                    logger.error(f"Unexpected WebSocket error: {e}", exc_info=True)
+                    await self._reconnect()
 
     async def _reconnect(self):
         """Handle reconnection with exponential backoff"""

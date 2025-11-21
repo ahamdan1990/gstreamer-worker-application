@@ -36,11 +36,34 @@ def get_worker_client() -> WorkerClient:
 
 @router.get("/", response_model=List[CameraResponse])
 async def list_cameras(
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    worker: WorkerClient = Depends(get_worker_client)
 ):
-    """List all cameras"""
+    """List all cameras with fresh state from worker"""
     result = await db.execute(select(Camera))
     cameras = result.scalars().all()
+
+    # Sync state from worker for all cameras
+    try:
+        worker_cameras = await worker.list_cameras()
+        worker_state_map = {cam.camera_id: cam for cam in worker_cameras}
+
+        for camera in cameras:
+            if camera.camera_id in worker_state_map:
+                # Camera exists in worker - update state from worker
+                worker_cam = worker_state_map[camera.camera_id]
+                camera.state = worker_cam.state
+                camera.is_running = worker_cam.is_running
+            else:
+                # Camera not in worker - mark as ERROR
+                camera.state = "ERROR"
+                camera.is_running = False
+
+        # Commit the updated states
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to sync state from worker: {e}")
+
     return cameras
 
 
@@ -264,8 +287,45 @@ async def start_camera(
             detail=f"Camera '{camera_id}' is disabled"
         )
 
-    # Start camera in worker
+    # Ensure camera exists in worker before starting
     try:
+        # Check if camera exists in worker by listing all cameras
+        worker_cameras = await worker.list_cameras()
+        camera_exists = any(cam.camera_id == camera_id for cam in worker_cameras)
+
+        if not camera_exists:
+            # Camera doesn't exist in worker, sync it first
+            logger.info(f"Camera {camera_id} not in worker, syncing first...")
+
+            # Build motion detection config if enabled
+            worker_motion_config = None
+            if camera.motion_detection_enabled and camera.motion_detection_config:
+                from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
+                worker_motion_config = WorkerMotionConfig(**camera.motion_detection_config)
+
+            # Build RTSP URL with embedded credentials for worker
+            rtsp_url = camera.rtsp_url
+            if camera.username and camera.password and "@" not in rtsp_url:
+                # Embed credentials in URL: rtsp://user:pass@host
+                rtsp_url = rtsp_url.replace("rtsp://", f"rtsp://{camera.username}:{camera.password}@")
+
+            worker_config = WorkerCameraConfig(
+                camera_id=camera.camera_id,
+                rtsp_url=rtsp_url,
+                username=camera.username,
+                password=camera.password,
+                protocols=camera.protocols,
+                latency_ms=camera.latency_ms,
+                target_fps=camera.target_fps,
+                enable_display=camera.enable_display,
+                use_nvidia_decoder=camera.use_nvidia_decoder,
+                motion_detection=worker_motion_config
+            )
+
+            await worker.add_or_update_camera(worker_config)
+            logger.info(f"Synced camera {camera_id} to worker")
+
+        # Now start the camera
         result = await worker.start_camera(camera_id)
         logger.info(f"Started camera {camera_id}")
 
