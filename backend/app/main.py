@@ -1,6 +1,7 @@
 """
 FastAPI Main Application - Camera Management System MVP
 """
+from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -18,6 +19,9 @@ from app.db.base import get_db
 from app.models.camera import Camera
 from app.services.worker_client import WorkerClient, WorkerCameraConfig
 from app.schemas.event import MotionEventWebhook
+from app.services.websocket_client import WorkerWebSocketClient
+from app.services.event_handlers import event_handler
+from app.services.state_cache import camera_state_cache
 
 # Create logs directory if it doesn't exist (relative to backend directory)
 log_dir = Path(__file__).parent.parent / 'logs'
@@ -43,8 +47,7 @@ logger.addHandler(file_handler)
 
 # Global worker process and state
 worker_process = None
-worker_health_task = None
-worker_was_healthy = False
+ws_client: Optional[WorkerWebSocketClient] = None
 sync_lock = asyncio.Lock()  # Prevent concurrent sync operations
 
 
@@ -138,54 +141,29 @@ async def stop_worker_process():
         worker_process = None
 
 
-async def monitor_worker_health():
+async def initialize_websocket_client():
     """
-    Background task to continuously monitor worker health.
-    Automatically restarts worker and re-syncs cameras if it crashes.
+    Initialize and start WebSocket client for real-time events from worker.
+    Replaces HTTP polling with push-based architecture.
     """
-    global worker_was_healthy
+    global ws_client
 
-    logger.info("Worker health monitoring started")
+    # Use dedicated WebSocket URL (production: ws://localhost:8082/ws)
+    worker_ws_url = settings.WORKER_WS_URL
 
-    while True:
-        try:
-            await asyncio.sleep(5)  # Check every 5 seconds
+    logger.info(f"Initializing WebSocket client: {worker_ws_url}")
 
-            worker = WorkerClient(base_url=settings.WORKER_API_URL)
-            is_healthy = await worker.health_check()
+    # Create WebSocket client with event handler callback
+    ws_client = WorkerWebSocketClient(
+        worker_ws_url=worker_ws_url,
+        on_event=event_handler.handle_event,
+        reconnect_delay=2.0,
+        max_reconnect_delay=60.0
+    )
 
-            if is_healthy:
-                if not worker_was_healthy:
-                    # Worker just came back online!
-                    logger.warning("🔄 Worker reconnected! Re-syncing cameras...")
-                    worker_was_healthy = True
-                    await asyncio.sleep(2)  # Give worker time to stabilize
-                    await sync_cameras_to_worker()
-            else:
-                if worker_was_healthy:
-                    # Worker just went offline
-                    logger.error("❌ Worker is OFFLINE! Attempting automatic restart...")
-                    worker_was_healthy = False
-
-                    # Attempt to restart worker
-                    if settings.WORKER_AUTO_START:
-                        logger.info("Attempting to restart worker process...")
-                        await stop_worker_process()
-                        await asyncio.sleep(2)
-                        success = await start_worker_process()
-                        if success:
-                            logger.info("✅ Worker restarted successfully")
-                            await asyncio.sleep(3)
-                            await sync_cameras_to_worker()
-                        else:
-                            logger.error("❌ Failed to restart worker")
-
-        except asyncio.CancelledError:
-            logger.info("Worker health monitoring stopped")
-            break
-        except Exception as e:
-            logger.error(f"Error in worker health monitor: {e}")
-            await asyncio.sleep(5)
+    # Start the client (non-blocking)
+    await ws_client.start()
+    logger.info("WebSocket client started successfully")
 
 
 async def sync_cameras_to_worker():
@@ -269,7 +247,7 @@ async def sync_cameras_to_worker():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    global worker_health_task, worker_was_healthy
+    global ws_client
 
     # Startup: Start worker process
     logger.info("=" * 60)
@@ -282,20 +260,21 @@ async def lifespan(app: FastAPI):
     # Wait a moment for worker to fully initialize
     await asyncio.sleep(2)
 
-    # Mark worker as healthy initially
-    worker_was_healthy = True
-
     # Synchronize cameras from database to worker
     # Note: Worker will call /api/v1/worker/ready which triggers sync
     # But we also sync here in case callback fails
     await sync_cameras_to_worker()
 
-    # Start background health monitoring
-    logger.info("Starting worker health monitoring...")
-    worker_health_task = asyncio.create_task(monitor_worker_health())
+    # Initialize WebSocket client for real-time events
+    logger.info("Starting WebSocket client for real-time events...")
+    await initialize_websocket_client()
+
+    # Wait for WebSocket to connect
+    await asyncio.sleep(1)
 
     logger.info("=" * 60)
     logger.info("FastAPI Application Ready")
+    logger.info(f"WebSocket connected: {ws_client.is_connected() if ws_client else False}")
     logger.info("=" * 60)
 
     yield
@@ -305,14 +284,10 @@ async def lifespan(app: FastAPI):
     logger.info("FastAPI Application Shutting Down")
     logger.info("=" * 60)
 
-    # Stop health monitoring
-    if worker_health_task:
-        logger.info("Stopping worker health monitoring...")
-        worker_health_task.cancel()
-        try:
-            await worker_health_task
-        except asyncio.CancelledError:
-            pass
+    # Stop WebSocket client
+    if ws_client:
+        logger.info("Stopping WebSocket client...")
+        await ws_client.stop()
 
     # Stop worker process
     await stop_worker_process()

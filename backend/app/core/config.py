@@ -41,7 +41,9 @@ class Settings(BaseSettings):
     # C++ Worker
     WORKER_HOST: str = "localhost"
     WORKER_PORT: int = 8081
+    WORKER_WS_PORT: int = 8082  # WebSocket on separate port for production
     WORKER_API_URL: str = "http://localhost:8081"
+    WORKER_WS_URL: str = "ws://localhost:8082/ws"
     WORKER_EXECUTABLE: str = "../gstreamer_worker/build/gstreamer_worker_api"
     WORKER_AUTO_START: bool = True
     WORKER_AUTO_RESTART: bool = True

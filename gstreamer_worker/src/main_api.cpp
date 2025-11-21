@@ -1,5 +1,7 @@
 #include "pipeline_manager.h"
 #include "api_server.h"
+#include "websocket_server.h"
+#include "event_broadcaster.h"
 #include "logger.h"
 
 #include <iostream>
@@ -190,22 +192,44 @@ int main(int argc, char* argv[]) {
             on_error
         );
 
+        // Create event broadcaster for real-time notifications
+        auto broadcaster = std::make_shared<EventBroadcaster>();
+
+        // Attach broadcaster to pipeline manager
+        manager->set_event_broadcaster(broadcaster);
+
         // Start pipeline manager
         LOG_INFO("main", "Starting pipeline manager");
         // Manager starts when first camera is added via API
 
-        // Create and start API server
+        // Create and start HTTP API server on port 8081
         APIServer api_server(manager, host, port);
 
         if (!api_server.start()) {
-            LOG_ERROR("main", "Failed to start API server");
+            LOG_ERROR("main", "Failed to start HTTP API server");
             return 1;
         }
 
-        LOG_INFO("main", "API server started successfully");
-        std::cout << "\n✅ API Server ready at http://" << host << ":" << port << "\n";
+        // Create and start WebSocket server on port 8082 (separate port for production)
+        int ws_port = 8082;
+        auto ws_server = std::make_shared<WebSocketServer>(host, ws_port, "/ws");
+        broadcaster->set_websocket_server(ws_server);
+
+        if (!ws_server->start()) {
+            LOG_ERROR("main", "Failed to start WebSocket server");
+            api_server.stop();
+            return 1;
+        }
+
+        LOG_INFO("main", "All servers started successfully");
+        std::cout << "\n✅ HTTP API ready at http://" << host << ":" << port << "\n";
         std::cout << "   Health check: http://" << host << ":" << port << "/health\n";
-        std::cout << "   List cameras: http://" << host << ":" << port << "/api/cameras\n" << std::endl;
+        std::cout << "   List cameras: http://" << host << ":" << port << "/api/cameras\n";
+        std::cout << "✅ WebSocket ready at ws://" << host << ":" << ws_port << "/ws\n";
+        std::cout << "   Real-time events streaming enabled\n" << std::endl;
+
+        // Emit worker started event
+        broadcaster->emit_worker_started();
 
         // Notify FastAPI if URL is provided
         if (!fastapi_url.empty()) {
@@ -221,7 +245,10 @@ int main(int argc, char* argv[]) {
         // Graceful shutdown
         std::cout << "\nShutting down gracefully..." << std::endl;
 
-        LOG_INFO("main", "Stopping API server");
+        LOG_INFO("main", "Stopping WebSocket server");
+        ws_server->stop();
+
+        LOG_INFO("main", "Stopping HTTP API server");
         api_server.stop();
 
         LOG_INFO("main", "Stopping all cameras");

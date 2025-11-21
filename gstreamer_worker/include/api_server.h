@@ -12,11 +12,8 @@ namespace gstreamer_worker {
 /**
  * @brief REST API server for controlling the pipeline manager
  *
- * Provides HTTP endpoints to:
- * - Add/remove cameras
- * - Start/stop camera streams
- * - Get camera status
- * - List all cameras
+ * Provides HTTP endpoints:
+ * - Add/remove cameras, start/stop streams, get status
  */
 class APIServer {
 public:

@@ -190,15 +190,14 @@ async def update_camera(
             motion_detection=worker_motion_config
         )
 
-        # Update worker configuration (add or update)
+        # Update worker configuration (remove and re-add with new config)
         await worker.add_or_update_camera(worker_config)
         logger.info(f"Synced updated configuration to worker for camera {camera_id}")
 
-        # If camera was running, restart it to apply changes
+        # Restart camera if it was running before the update
         if was_running:
-            logger.info(f"Restarting camera {camera_id} to apply configuration changes")
-            await worker.stop_camera(camera_id)
             await worker.start_camera(camera_id)
+            logger.info(f"Restarted camera {camera_id} with new configuration")
             camera.is_running = True
             await db.commit()
 
@@ -340,8 +339,9 @@ async def get_camera_status(
     db: AsyncSession = Depends(get_db),
     worker: WorkerClient = Depends(get_worker_client)
 ):
-    """Get real-time camera status from worker with motion detection metrics"""
+    """Get camera status from cache (WebSocket-updated) with HTTP fallback"""
     from app.schemas.camera import CameraMetrics, MotionDetectionMetrics
+    from app.services.state_cache import camera_state_cache
 
     result = await db.execute(
         select(Camera).where(Camera.camera_id == camera_id)
@@ -354,7 +354,45 @@ async def get_camera_status(
             detail=f"Camera '{camera_id}' not found"
         )
 
-    # Get live status from worker
+    # Try cache first (updated in real-time via WebSocket)
+    cached_state = await camera_state_cache.get_camera(camera_id)
+
+    if cached_state:
+        logger.debug(f"Cache hit for {camera_id}")
+
+        # Parse metrics from cache
+        cached_metrics = cached_state.get('metrics', {})
+        motion_metrics = None
+
+        # Extract motion detection metrics if present
+        if 'frames_analyzed' in cached_metrics and cached_metrics['frames_analyzed'] > 0:
+            motion_metrics = MotionDetectionMetrics(
+                frames_analyzed=cached_metrics.get('frames_analyzed', 0),
+                motion_events_detected=cached_metrics.get('motion_events_detected', 0),
+                motion_detection_fps=cached_metrics.get('motion_detection_fps', 0.0),
+                last_motion_timestamp=cached_metrics.get('last_motion_timestamp')
+            )
+
+        # Build complete metrics
+        metrics = CameraMetrics(
+            uptime_seconds=cached_metrics.get('uptime_seconds', 0.0),
+            errors_count=cached_metrics.get('errors_count', 0),
+            reconnections=cached_metrics.get('reconnections', 0),
+            frames_displayed=cached_metrics.get('frames_displayed', 0),
+            motion=motion_metrics
+        )
+
+        return CameraStatus(
+            camera_id=camera.camera_id,
+            state=cached_state.get('state', camera.state),
+            is_running=cached_state.get('is_running', camera.is_running),
+            last_seen_at=camera.last_seen_at,
+            metrics=metrics
+        )
+
+    # Fallback to HTTP worker call if cache miss
+    logger.warning(f"Cache miss for {camera_id}, falling back to HTTP worker call")
+
     try:
         worker_status = await worker.get_camera_status(camera_id)
 

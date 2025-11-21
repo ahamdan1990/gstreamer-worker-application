@@ -15,6 +15,9 @@
 
 namespace gstreamer_worker {
 
+// Forward declarations
+class EventBroadcaster;
+
 /**
  * @brief Production-ready manager for multiple camera streams
  *
@@ -135,6 +138,12 @@ public:
      */
     size_t get_running_camera_count() const;
 
+    /**
+     * @brief Set event broadcaster for real-time event notifications
+     * @param broadcaster Shared pointer to EventBroadcaster
+     */
+    void set_event_broadcaster(std::shared_ptr<EventBroadcaster> broadcaster);
+
 private:
     // Configuration
     PipelineManagerConfig config_;
@@ -144,6 +153,9 @@ private:
     StateCallback on_state_changed_;
     ErrorCallback on_error_;
     MotionEventCallback on_motion_;
+
+    // Event broadcaster for WebSocket events
+    std::shared_ptr<EventBroadcaster> event_broadcaster_;
 
     // Camera streams
     std::map<std::string, std::unique_ptr<CameraStream>> streams_;

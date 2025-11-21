@@ -76,6 +76,15 @@ FetchContent_Declare(httplib
 )
 FetchContent_MakeAvailable(httplib)
 
+# IXWebSocket (WebSocket client/server library)
+FetchContent_Declare(ixwebsocket
+    GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
+    GIT_TAG v11.4.5
+)
+set(USE_TLS ON CACHE BOOL "Enable TLS support for IXWebSocket")
+set(USE_ZLIB ON CACHE BOOL "Enable ZLIB compression for IXWebSocket")
+FetchContent_MakeAvailable(ixwebsocket)
+
 # Include directories
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -98,6 +107,8 @@ set(SOURCES
     src/config_loader.cpp
     src/logger.cpp
     src/motion_detector.cpp
+    src/websocket_server.cpp
+    src/event_broadcaster.cpp
 )
 
 # API Server sources
@@ -115,6 +126,8 @@ set(HEADERS
     include/types.h
     include/api_server.h
     include/motion_detector.h
+    include/websocket_server.h
+    include/event_broadcaster.h
 )
 
 # Create library
@@ -125,6 +138,7 @@ target_link_libraries(gstreamer_worker_lib
     ${OpenCV_LIBS}
     Threads::Threads
     nlohmann_json::nlohmann_json
+    ixwebsocket
 )
 
 # Main executable (single camera)
@@ -149,7 +163,7 @@ target_link_libraries(gstreamer_worker_multi
     nlohmann_json::nlohmann_json
 )
 
-# API Server executable (with REST API)
+# API Server executable (with REST API + WebSocket support)
 add_executable(gstreamer_worker_api src/main_api.cpp ${API_SOURCES})
 target_link_libraries(gstreamer_worker_api
     gstreamer_worker_lib
@@ -159,6 +173,7 @@ target_link_libraries(gstreamer_worker_api
     Threads::Threads
     nlohmann_json::nlohmann_json
     httplib::httplib
+    ixwebsocket
 )
 
 # Install targets

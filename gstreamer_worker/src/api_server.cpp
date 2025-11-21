@@ -66,6 +66,7 @@ bool APIServer::is_running() const {
     return running_.load();
 }
 
+
 void APIServer::run_server() {
     try {
         httplib::Server server;
@@ -129,7 +130,11 @@ void APIServer::setup_routes() {
                         {"frames_displayed", m.frames_displayed},
                         {"errors_count", m.errors_count},
                         {"reconnections", m.reconnections},
-                        {"uptime_seconds", m.uptime_seconds}
+                        {"uptime_seconds", m.uptime_seconds},
+                        {"frames_analyzed", m.frames_analyzed},
+                        {"motion_events_detected", m.motion_events_detected},
+                        {"motion_detection_fps", m.motion_detection_fps},
+                        {"last_motion_timestamp", m.last_motion_timestamp}
                     };
                 }
 
@@ -161,7 +166,11 @@ void APIServer::setup_routes() {
                     {"errors_count", metrics.errors_count},
                     {"reconnections", metrics.reconnections},
                     {"uptime_seconds", metrics.uptime_seconds},
-                    {"last_error", metrics.last_error}
+                    {"last_error", metrics.last_error},
+                    {"frames_analyzed", metrics.frames_analyzed},
+                    {"motion_events_detected", metrics.motion_events_detected},
+                    {"motion_detection_fps", metrics.motion_detection_fps},
+                    {"last_motion_timestamp", metrics.last_motion_timestamp}
                 }}
             };
 
@@ -189,6 +198,54 @@ void APIServer::setup_routes() {
             if (body.contains("target_fps")) config.target_fps = body["target_fps"];
             if (body.contains("enable_display")) config.enable_display = body["enable_display"];
             if (body.contains("use_nvidia_decoder")) config.use_nvidia_decoder = body["use_nvidia_decoder"];
+
+            // Parse motion detection configuration
+            if (body.contains("motion_detection")) {
+                auto md = body["motion_detection"];
+                config.motion_detection.enabled = md.value("enabled", false);
+
+                if (config.motion_detection.enabled) {
+                    // Algorithm selection
+                    if (md.contains("algorithm")) {
+                        std::string algo = md["algorithm"];
+                        if (algo == "MOG2_CUDA") config.motion_detection.algorithm = MotionAlgorithm::MOG2_CUDA;
+                        else if (algo == "MOG2") config.motion_detection.algorithm = MotionAlgorithm::MOG2;
+                        else if (algo == "KNN") config.motion_detection.algorithm = MotionAlgorithm::KNN;
+                        else if (algo == "FRAME_DIFF") config.motion_detection.algorithm = MotionAlgorithm::FRAME_DIFF;
+                    }
+
+                    // Detection parameters
+                    if (md.contains("sensitivity")) config.motion_detection.sensitivity = md["sensitivity"];
+                    if (md.contains("min_contour_area")) config.motion_detection.min_contour_area = md["min_contour_area"];
+                    if (md.contains("max_contours")) config.motion_detection.max_contours = md["max_contours"];
+
+                    // Frame processing
+                    if (md.contains("frame_skip")) config.motion_detection.frame_skip = md["frame_skip"];
+                    if (md.contains("blur_size")) config.motion_detection.blur_size = md["blur_size"];
+
+                    // Background subtraction parameters
+                    if (md.contains("history")) config.motion_detection.history = md["history"];
+                    if (md.contains("var_threshold")) config.motion_detection.var_threshold = md["var_threshold"];
+                    if (md.contains("detect_shadows")) config.motion_detection.detect_shadows = md["detect_shadows"];
+
+                    // Event debouncing
+                    if (md.contains("cooldown_seconds")) config.motion_detection.cooldown_seconds = md["cooldown_seconds"];
+                    if (md.contains("required_frames")) config.motion_detection.required_frames = md["required_frames"];
+
+                    // Frame size limits
+                    if (md.contains("max_frame_width")) config.motion_detection.max_frame_width = md["max_frame_width"];
+                    if (md.contains("max_frame_height")) config.motion_detection.max_frame_height = md["max_frame_height"];
+
+                    // Region of Interest (ROI)
+                    if (md.contains("roi") && !md["roi"].is_null()) {
+                        auto roi = md["roi"];
+                        config.motion_detection.roi.x = roi.value("x", 0);
+                        config.motion_detection.roi.y = roi.value("y", 0);
+                        config.motion_detection.roi.width = roi.value("width", 0);
+                        config.motion_detection.roi.height = roi.value("height", 0);
+                    }
+                }
+            }
 
             bool success = manager_->add_camera(config);
 

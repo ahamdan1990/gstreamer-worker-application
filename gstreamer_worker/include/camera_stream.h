@@ -104,6 +104,11 @@ public:
     std::string get_camera_id() const { return config_.camera_id; }
 
     /**
+     * @brief Get camera configuration
+     */
+    const CameraConfig& get_config() const { return config_; }
+
+    /**
      * @brief Enable or disable motion detection at runtime
      */
     void enable_motion_detection(bool enable);

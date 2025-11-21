@@ -1,5 +1,6 @@
 #include "pipeline_manager.h"
 #include "logger.h"
+#include "event_broadcaster.h"
 
 #include <chrono>
 #include <thread>
@@ -248,6 +249,11 @@ size_t PipelineManager::get_running_camera_count() const {
     return count;
 }
 
+void PipelineManager::set_event_broadcaster(std::shared_ptr<EventBroadcaster> broadcaster) {
+    event_broadcaster_ = broadcaster;
+    LOG_INFO(log_tag_, "Event broadcaster attached to PipelineManager");
+}
+
 void PipelineManager::handle_state_change(
     const std::string& camera_id,
     StreamState new_state
@@ -255,6 +261,26 @@ void PipelineManager::handle_state_change(
     LOG_INFO(log_tag_,
         "Camera " + camera_id + " state changed to " +
         stream_state_to_string(new_state));
+
+    // Emit WebSocket event
+    if (event_broadcaster_) {
+        std::string state_str = stream_state_to_string(new_state);
+
+        if (new_state == StreamState::RUNNING) {
+            auto stream = get_camera(camera_id);
+            std::string rtsp_url = stream ? stream->get_config().rtsp_url : "";
+            event_broadcaster_->emit_camera_started(camera_id, rtsp_url);
+        }
+        else if (new_state == StreamState::STOPPED) {
+            event_broadcaster_->emit_camera_stopped(camera_id, "manual", 0.0);
+        }
+        else if (new_state == StreamState::RECONNECTING) {
+            event_broadcaster_->emit_camera_reconnecting(camera_id, 1, 10);
+        }
+        else if (new_state == StreamState::ERROR) {
+            event_broadcaster_->emit_camera_error(camera_id, "Stream error", "STREAM_ERROR");
+        }
+    }
 
     // Call user callback
     if (on_state_changed_) {
@@ -272,6 +298,11 @@ void PipelineManager::handle_error(
     const std::string& error_msg
 ) {
     LOG_ERROR(log_tag_, "Camera " + camera_id + " error: " + error_msg);
+
+    // Emit WebSocket event
+    if (event_broadcaster_) {
+        event_broadcaster_->emit_camera_error(camera_id, error_msg, "ERROR");
+    }
 
     // Call user callback
     if (on_error_) {
