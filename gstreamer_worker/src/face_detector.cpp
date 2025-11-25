@@ -2,6 +2,8 @@
 #include "logger.h"
 
 #include <iostream>
+#include <sstream>
+#include <iomanip>
 #include <cmath>
 #include <algorithm>
 #include <numeric>
@@ -215,31 +217,43 @@ bool FaceDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
                       << " (removed " << (before_nms - detections.size()) << ")" << std::endl;
         }
 
-        // Store latest detections for visualization
+        // Filter out faces that are already being tracked
+        // Only trigger events for NEW faces
+        std::vector<FaceDetection> new_face_detections = filter_tracked_faces(detections);
+
+        // Add new faces to tracking (so we don't re-detect them)
+        if (!new_face_detections.empty()) {
+            update_face_tracking(new_face_detections);
+        }
+
+        // Store latest detections for visualization (show all detections)
         {
             std::lock_guard<std::mutex> lock(face_mutex_);
             latest_detections_ = detections;
         }
 
-        // Check if we should trigger an event
-        faces_detected = !detections.empty();
-        std::cout << "[FaceDetector:" << camera_id_ << "] Faces detected: " << faces_detected
+        // Check if we should trigger an event (only for NEW faces)
+        faces_detected = !new_face_detections.empty();
+        std::cout << "[FaceDetector:" << camera_id_ << "] New faces: " << new_face_detections.size()
                   << ", Should trigger event: " << should_trigger_event(faces_detected) << std::endl;
         if (should_trigger_event(faces_detected)) {
-            // Create face event
+            // Create face event (only for NEW faces)
             FaceEvent event;
             event.camera_id = camera_id_;
             event.timestamp = std::chrono::duration<double>(
                 std::chrono::system_clock::now().time_since_epoch()
             ).count();
-            event.num_faces = static_cast<int>(detections.size());
-            event.faces = detections;
+            event.num_faces = static_cast<int>(new_face_detections.size());
+            event.faces = new_face_detections;
 
             // Update last event time
             {
                 std::lock_guard<std::mutex> lock(face_mutex_);
                 last_event_time_ = std::chrono::steady_clock::now();
             }
+
+            // Save face crops for verification and CompreFace integration (only NEW faces)
+            save_face_crops(d_frame, new_face_detections, event.timestamp);
 
             // Trigger callback
             if (on_face_) {
@@ -483,6 +497,23 @@ std::vector<FaceDetection> FaceDetector::decode_bboxes(
             continue;
         }
 
+        // Filter out abnormally tall/wide faces (likely false positives)
+        // Face aspect ratio should be roughly 0.7-1.5 (width/height)
+        // Reject faces taller than 3x their width or wider than 2x their height
+        float aspect_ratio = w / h;
+        if (aspect_ratio < 0.33f || aspect_ratio > 2.0f) {
+            // Likely a false positive (too tall or too wide)
+            continue;
+        }
+
+        // Filter out faces that span too much of the frame (likely edge artifacts)
+        // Real faces shouldn't take up more than 80% of frame height/width
+        float height_ratio = h / orig_height;
+        float width_ratio = w / orig_width;
+        if (height_ratio > 0.8f || width_ratio > 0.8f) {
+            continue;
+        }
+
         // Create detection
         FaceDetection det;
         det.confidence = score;
@@ -682,6 +713,196 @@ cv::cuda::GpuMat FaceDetector::apply_roi_cuda(const cv::cuda::GpuMat& d_frame) c
     }
 
     return d_frame(cv::Rect(x, y, w, h));
+}
+
+void FaceDetector::save_face_crops(
+    const cv::cuda::GpuMat& d_frame,
+    const std::vector<FaceDetection>& detections,
+    double event_timestamp
+) {
+    std::cout << "[FaceDetector:" << camera_id_ << "] save_face_crops called: "
+              << "save_faces=" << config_.save_faces
+              << ", detections=" << detections.size()
+              << ", save_path=" << config_.save_path
+              << ", min_confidence=" << config_.min_save_confidence
+              << std::endl;
+
+    if (!config_.save_faces || detections.empty()) {
+        std::cout << "[FaceDetector:" << camera_id_ << "] Skipping save: "
+                  << (config_.save_faces ? "no detections" : "save_faces disabled")
+                  << std::endl;
+        return;
+    }
+
+    // Create save directory if it doesn't exist
+    std::string mkdir_cmd = "mkdir -p " + config_.save_path;
+    system(mkdir_cmd.c_str());
+
+    // Download frame from GPU to CPU once
+    cv::Mat h_frame;
+    d_frame.download(h_frame);
+
+    int saved_count = 0;
+    std::cout << "[FaceDetector:" << camera_id_ << "] Processing " << detections.size()
+              << " detections for saving (max=" << config_.max_saves_per_event << ")" << std::endl;
+
+    for (size_t i = 0; i < detections.size() && saved_count < config_.max_saves_per_event; i++) {
+        const auto& detection = detections[i];
+
+        std::cout << "[FaceDetector:" << camera_id_ << "] Detection [" << i << "]: "
+                  << "confidence=" << detection.confidence
+                  << ", bbox=[" << detection.bbox.x << "," << detection.bbox.y
+                  << " " << detection.bbox.width << "x" << detection.bbox.height << "]"
+                  << std::endl;
+
+        // Skip if confidence too low
+        if (detection.confidence < config_.min_save_confidence) {
+            std::cout << "[FaceDetector:" << camera_id_ << "] Skipping detection [" << i
+                      << "]: confidence " << detection.confidence << " < " << config_.min_save_confidence
+                      << std::endl;
+            continue;
+        }
+
+        // Convert normalized coordinates to pixels
+        int frame_width = h_frame.cols;
+        int frame_height = h_frame.rows;
+
+        // Calculate face box with margin
+        float margin = config_.save_margin;
+        float x = detection.bbox.x - (detection.bbox.width * margin / 2.0f);
+        float y = detection.bbox.y - (detection.bbox.height * margin / 2.0f);
+        float w = detection.bbox.width * (1.0f + margin);
+        float h = detection.bbox.height * (1.0f + margin);
+
+        // Clamp to frame boundaries
+        x = std::max(0.0f, std::min(x, 1.0f));
+        y = std::max(0.0f, std::min(y, 1.0f));
+        w = std::min(w, 1.0f - x);
+        h = std::min(h, 1.0f - y);
+
+        // Convert to pixel coordinates
+        int px = static_cast<int>(x * frame_width);
+        int py = static_cast<int>(y * frame_height);
+        int pw = static_cast<int>(w * frame_width);
+        int ph = static_cast<int>(h * frame_height);
+
+        // Ensure valid crop dimensions
+        if (pw <= 0 || ph <= 0 || px + pw > frame_width || py + ph > frame_height) {
+            continue;
+        }
+
+        // Crop face with margin
+        cv::Mat face_crop = h_frame(cv::Rect(px, py, pw, ph));
+
+        // Generate filename: {camera_id}_{timestamp}_{face_num}_{confidence}.jpg
+        // This format is compatible with CompreFace and easy to organize
+        std::stringstream filename;
+        filename << config_.save_path << "/"
+                 << camera_id_ << "_"
+                 << std::fixed << std::setprecision(3) << event_timestamp << "_"
+                 << "face" << (i + 1) << "_"
+                 << static_cast<int>(detection.confidence * 100) << ".jpg";
+
+        // Save face crop
+        try {
+            cv::imwrite(filename.str(), face_crop);
+            std::cout << "[FaceDetector:" << camera_id_ << "] Saved face crop: "
+                      << filename.str() << " (" << pw << "x" << ph << " pixels, "
+                      << static_cast<int>(detection.confidence * 100) << "% confidence)"
+                      << std::endl;
+            saved_count++;
+        } catch (const std::exception& e) {
+            std::cerr << "[FaceDetector:" << camera_id_ << "] Failed to save face crop: "
+                      << e.what() << std::endl;
+        }
+    }
+}
+
+std::vector<FaceDetection> FaceDetector::filter_tracked_faces(
+    const std::vector<FaceDetection>& detections
+) {
+    std::lock_guard<std::mutex> lock(face_mutex_);
+
+    // Remove stale tracked faces (not seen for face_tracking_timeout_ seconds)
+    auto now = std::chrono::steady_clock::now();
+    tracked_faces_.erase(
+        std::remove_if(tracked_faces_.begin(), tracked_faces_.end(),
+            [&](const TrackedFace& tf) {
+                double elapsed = std::chrono::duration<double>(now - tf.last_seen).count();
+                bool is_stale = elapsed > face_tracking_timeout_;
+                if (is_stale) {
+                    std::cout << "[FaceDetector:" << camera_id_ << "] Removing stale tracked face "
+                              << "(not seen for " << elapsed << "s)" << std::endl;
+                }
+                return is_stale;
+            }),
+        tracked_faces_.end()
+    );
+
+    // Filter out detections that match existing tracked faces
+    std::vector<FaceDetection> new_faces;
+    for (const auto& detection : detections) {
+        bool is_tracked = false;
+
+        // Check if this detection matches any tracked face
+        for (auto& tracked : tracked_faces_) {
+            float iou = calculate_iou(detection.bbox, tracked.bbox);
+            if (iou > face_tracking_iou_threshold_) {
+                // This face is already being tracked
+                is_tracked = true;
+                tracked.last_seen = now;
+                tracked.frames_tracked++;
+                tracked.bbox = detection.bbox;  // Update position
+                std::cout << "[FaceDetector:" << camera_id_ << "] Face already tracked "
+                          << "(IoU=" << iou << ", frames=" << tracked.frames_tracked << ")" << std::endl;
+                break;
+            }
+        }
+
+        if (!is_tracked) {
+            new_faces.push_back(detection);
+            std::cout << "[FaceDetector:" << camera_id_ << "] New face detected: "
+                      << "confidence=" << detection.confidence
+                      << ", bbox=[" << detection.bbox.x << "," << detection.bbox.y
+                      << " " << detection.bbox.width << "x" << detection.bbox.height << "]"
+                      << std::endl;
+        }
+    }
+
+    std::cout << "[FaceDetector:" << camera_id_ << "] Face tracking: "
+              << detections.size() << " detections, "
+              << tracked_faces_.size() << " tracked, "
+              << new_faces.size() << " new" << std::endl;
+
+    return new_faces;
+}
+
+void FaceDetector::update_face_tracking(const std::vector<FaceDetection>& detections) {
+    std::lock_guard<std::mutex> lock(face_mutex_);
+
+    auto now = std::chrono::steady_clock::now();
+
+    // Add new faces to tracking
+    for (const auto& detection : detections) {
+        // Check if already tracked
+        bool already_tracked = false;
+        for (const auto& tracked : tracked_faces_) {
+            float iou = calculate_iou(detection.bbox, tracked.bbox);
+            if (iou > face_tracking_iou_threshold_) {
+                already_tracked = true;
+                break;
+            }
+        }
+
+        if (!already_tracked) {
+            TrackedFace tf;
+            tf.bbox = detection.bbox;
+            tf.last_seen = now;
+            tf.frames_tracked = 1;
+            tracked_faces_.push_back(tf);
+            std::cout << "[FaceDetector:" << camera_id_ << "] Started tracking new face" << std::endl;
+        }
+    }
 }
 
 } // namespace gstreamer_worker

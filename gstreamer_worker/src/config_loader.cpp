@@ -360,6 +360,23 @@ bool ConfigLoader::load_from_string(
                         cam.face_detection.max_batch_size = face_json["max_batch_size"].get<int>();
                     }
 
+                    // Face saving configuration (for verification and CompreFace integration)
+                    if (face_json.contains("save_faces")) {
+                        cam.face_detection.save_faces = face_json["save_faces"].get<bool>();
+                    }
+                    if (face_json.contains("save_path")) {
+                        cam.face_detection.save_path = face_json["save_path"].get<std::string>();
+                    }
+                    if (face_json.contains("save_margin")) {
+                        cam.face_detection.save_margin = face_json["save_margin"].get<float>();
+                    }
+                    if (face_json.contains("min_save_confidence")) {
+                        cam.face_detection.min_save_confidence = face_json["min_save_confidence"].get<float>();
+                    }
+                    if (face_json.contains("max_saves_per_event")) {
+                        cam.face_detection.max_saves_per_event = face_json["max_saves_per_event"].get<int>();
+                    }
+
                     // ROI configuration (optional)
                     if (face_json.contains("roi")) {
                         const auto& roi_json = face_json["roi"];

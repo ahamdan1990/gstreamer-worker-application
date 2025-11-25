@@ -159,6 +159,17 @@ private:
     std::chrono::steady_clock::time_point last_event_time_;
     std::deque<bool> face_history_;  // Track faces over recent frames
     std::vector<FaceDetection> latest_detections_;  // Latest detections for visualization
+
+    // Face tracking (to avoid re-detecting same faces)
+    struct TrackedFace {
+        FaceBoundingBox bbox;
+        std::chrono::steady_clock::time_point last_seen;
+        int frames_tracked = 0;
+    };
+    std::vector<TrackedFace> tracked_faces_;
+    double face_tracking_timeout_ = 15.0;  // Remove tracked faces after 15 seconds (increased)
+    float face_tracking_iou_threshold_ = 0.2f;  // IoU threshold for matching faces (more lenient)
+
     mutable std::mutex face_mutex_;
 
     // Performance metrics
@@ -252,6 +263,41 @@ private:
      * @brief Apply ROI to frame (if configured)
      */
     cv::cuda::GpuMat apply_roi_cuda(const cv::cuda::GpuMat& d_frame) const;
+
+    /**
+     * @brief Save cropped face images with margin
+     * @param frame Original frame (GPU)
+     * @param detections Detected faces
+     * @param event_timestamp Timestamp for filename
+     *
+     * Saves faces to: {save_path}/{camera_id}_{timestamp}_{face_num}_{confidence}.jpg
+     * Format is compatible with CompreFace face recognition system
+     */
+    void save_face_crops(
+        const cv::cuda::GpuMat& frame,
+        const std::vector<FaceDetection>& detections,
+        double event_timestamp
+    );
+
+    /**
+     * @brief Filter detections to only include NEW faces (not currently tracked)
+     * @param detections Input detections
+     * @return Only new faces that aren't currently being tracked
+     *
+     * This prevents re-triggering events for the same person who's still in frame.
+     * Uses IoU-based tracking with a 5-second timeout.
+     */
+    std::vector<FaceDetection> filter_tracked_faces(
+        const std::vector<FaceDetection>& detections
+    );
+
+    /**
+     * @brief Update face tracking with current detections
+     * @param detections Current frame's detections
+     *
+     * Updates tracked faces, removes stale tracks, adds new faces.
+     */
+    void update_face_tracking(const std::vector<FaceDetection>& detections);
 };
 
 } // namespace gstreamer_worker

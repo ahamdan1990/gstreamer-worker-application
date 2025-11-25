@@ -90,6 +90,13 @@ struct FaceDetectionConfig {
     bool use_cuda = true;          // Use CUDA execution provider (fallback from TensorRT)
     int max_batch_size = 1;        // Batch size for inference
 
+    // Face cropping and saving (for verification and CompreFace integration)
+    bool save_faces = false;                          // Enable saving cropped faces
+    std::string save_path = "./face_crops";          // Directory to save face crops
+    float save_margin = 0.3f;                        // Margin around face (0.3 = 30%)
+    float min_save_confidence = 0.4f;                // Minimum confidence to save face
+    int max_saves_per_event = 3;                     // Max faces to save per event
+
     /**
      * @brief Validate configuration
      */
@@ -102,6 +109,8 @@ struct FaceDetectionConfig {
         if (required_frames < 1) return false;
         if (cooldown_seconds < 0.0) return false;
         if (input_size <= 0) return false;
+        if (save_margin < 0.0f || save_margin > 2.0f) return false;
+        if (min_save_confidence < 0.0f || min_save_confidence > 1.0f) return false;
         return true;
     }
 };

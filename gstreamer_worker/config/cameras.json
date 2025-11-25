@@ -55,7 +55,12 @@
         "cooldown_seconds": 2.0,
         "use_tensorrt": true,
         "use_cuda": true,
-        "max_batch_size": 1
+        "max_batch_size": 1,
+        "save_faces": true,
+        "save_path": "./face_crops",
+        "save_margin": 0.3,
+        "min_save_confidence": 0.4,
+        "max_saves_per_event": 3
       }
     }
   ]

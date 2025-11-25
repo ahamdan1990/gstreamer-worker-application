@@ -30,6 +30,7 @@ find_package(OpenCV 4.0 REQUIRED
     COMPONENTS
         core
         imgproc
+        imgcodecs
         video
         cudabgsegm
         cudaimgproc
