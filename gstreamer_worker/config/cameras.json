@@ -7,7 +7,7 @@
   "cameras": [
     {
       "camera_id": "front_door",
-      "rtsp_url": "rtsp://192.168.0.219",
+      "rtsp_url": "rtsp://192.168.0.83",
       "username": "service",
       "password": "WSS4Sec$$",
       "protocols": "tcp",
@@ -46,7 +46,7 @@
         "input_size": 640,
         "confidence_threshold": 0.3,
         "nms_threshold": 0.4,
-        "frame_skip": 3,
+        "frame_skip": 2,
         "max_frame_width": 1280,
         "max_frame_height": 720,
         "min_face_size": 0.02,
