@@ -310,6 +310,82 @@ bool ConfigLoader::load_from_string(
                     }
                 }
 
+                // Face detection configuration
+                if (cam_json.contains("face_detection")) {
+                    const auto& face_json = cam_json["face_detection"];
+
+                    if (face_json.contains("enabled")) {
+                        cam.face_detection.enabled = face_json["enabled"].get<bool>();
+                    }
+                    if (face_json.contains("model_path")) {
+                        cam.face_detection.model_path = face_json["model_path"].get<std::string>();
+                    }
+                    if (face_json.contains("input_size")) {
+                        cam.face_detection.input_size = face_json["input_size"].get<int>();
+                    }
+                    if (face_json.contains("confidence_threshold")) {
+                        cam.face_detection.confidence_threshold = face_json["confidence_threshold"].get<float>();
+                    }
+                    if (face_json.contains("nms_threshold")) {
+                        cam.face_detection.nms_threshold = face_json["nms_threshold"].get<float>();
+                    }
+                    if (face_json.contains("frame_skip")) {
+                        cam.face_detection.frame_skip = face_json["frame_skip"].get<int>();
+                    }
+                    if (face_json.contains("max_frame_width")) {
+                        cam.face_detection.max_frame_width = face_json["max_frame_width"].get<int>();
+                    }
+                    if (face_json.contains("max_frame_height")) {
+                        cam.face_detection.max_frame_height = face_json["max_frame_height"].get<int>();
+                    }
+                    if (face_json.contains("min_face_size")) {
+                        cam.face_detection.min_face_size = face_json["min_face_size"].get<float>();
+                    }
+                    if (face_json.contains("max_faces")) {
+                        cam.face_detection.max_faces = face_json["max_faces"].get<int>();
+                    }
+                    if (face_json.contains("required_frames")) {
+                        cam.face_detection.required_frames = face_json["required_frames"].get<int>();
+                    }
+                    if (face_json.contains("cooldown_seconds")) {
+                        cam.face_detection.cooldown_seconds = face_json["cooldown_seconds"].get<double>();
+                    }
+                    if (face_json.contains("use_tensorrt")) {
+                        cam.face_detection.use_tensorrt = face_json["use_tensorrt"].get<bool>();
+                    }
+                    if (face_json.contains("use_cuda")) {
+                        cam.face_detection.use_cuda = face_json["use_cuda"].get<bool>();
+                    }
+                    if (face_json.contains("max_batch_size")) {
+                        cam.face_detection.max_batch_size = face_json["max_batch_size"].get<int>();
+                    }
+
+                    // ROI configuration (optional)
+                    if (face_json.contains("roi")) {
+                        const auto& roi_json = face_json["roi"];
+                        if (roi_json.contains("x")) {
+                            cam.face_detection.roi.x = roi_json["x"].get<int>();
+                        }
+                        if (roi_json.contains("y")) {
+                            cam.face_detection.roi.y = roi_json["y"].get<int>();
+                        }
+                        if (roi_json.contains("width")) {
+                            cam.face_detection.roi.width = roi_json["width"].get<int>();
+                        }
+                        if (roi_json.contains("height")) {
+                            cam.face_detection.roi.height = roi_json["height"].get<int>();
+                        }
+                    }
+
+                    // Validate face detection config
+                    if (!cam.face_detection.validate()) {
+                        LOG_WARNING("ConfigLoader",
+                            "Invalid face detection config for camera " + cam.camera_id +
+                            ", disabling face detection");
+                        cam.face_detection.enabled = false;
+                    }
+                }
+
                 // Validate
                 if (!cam.validate()) {
                     LOG_ERROR("ConfigLoader", "Invalid camera configuration: " + cam.camera_id);

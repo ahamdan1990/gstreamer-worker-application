@@ -56,6 +56,20 @@ endif()
 # Threads
 find_package(Threads REQUIRED)
 
+# ONNX Runtime (for face detection)
+set(ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime")
+set(ONNXRUNTIME_INCLUDE_DIRS "${ONNXRUNTIME_ROOT}/include")
+set(ONNXRUNTIME_LIBRARIES "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so")
+
+if(EXISTS "${ONNXRUNTIME_INCLUDE_DIRS}" AND EXISTS "${ONNXRUNTIME_LIBRARIES}")
+    message(STATUS "ONNX Runtime found: ${ONNXRUNTIME_ROOT}")
+    message(STATUS "  Include: ${ONNXRUNTIME_INCLUDE_DIRS}")
+    message(STATUS "  Library: ${ONNXRUNTIME_LIBRARIES}")
+else()
+    message(WARNING "ONNX Runtime not found in third_party/onnxruntime")
+    message(WARNING "Face detection will not be available")
+endif()
+
 # Enable FetchContent for downloading dependencies
 include(FetchContent)
 
@@ -91,6 +105,7 @@ include_directories(
     ${GSTREAMER_INCLUDE_DIRS}
     ${GLIB_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
+    ${ONNXRUNTIME_INCLUDE_DIRS}
 )
 
 # Link directories
@@ -107,6 +122,7 @@ set(SOURCES
     src/config_loader.cpp
     src/logger.cpp
     src/motion_detector.cpp
+    src/face_detector.cpp
     src/websocket_server.cpp
     src/event_broadcaster.cpp
 )
@@ -126,6 +142,7 @@ set(HEADERS
     include/types.h
     include/api_server.h
     include/motion_detector.h
+    include/face_detector.h
     include/websocket_server.h
     include/event_broadcaster.h
 )
@@ -136,6 +153,7 @@ target_link_libraries(gstreamer_worker_lib
     ${GSTREAMER_LIBRARIES}
     ${GLIB_LIBRARIES}
     ${OpenCV_LIBS}
+    ${ONNXRUNTIME_LIBRARIES}
     Threads::Threads
     nlohmann_json::nlohmann_json
     ixwebsocket

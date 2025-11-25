@@ -48,7 +48,24 @@ export default function EditCameraPage() {
         enable_display: data.enable_display,
         use_nvidia_decoder: data.use_nvidia_decoder,
         enabled: data.enabled,
-        motion_detection: data.motion_detection_config || undefined
+        motion_detection: data.motion_detection_config ? {
+          ...data.motion_detection_config
+        } : {
+          enabled: false,
+          algorithm: 'MOG2_CUDA',
+          sensitivity: 0.7,
+          min_contour_area: 500,
+          max_contours: 10,
+          frame_skip: 1,
+          blur_size: 5,
+          history: 500,
+          var_threshold: 16,
+          detect_shadows: true,
+          cooldown_seconds: 5,
+          required_frames: 2,
+          max_frame_width: 0,
+          max_frame_height: 0
+        }
       });
     } catch (error) {
       console.error('Failed to load camera:', error);
@@ -105,7 +122,7 @@ export default function EditCameraPage() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
       <Header title={`Edit ${camera.name}`} description="Update camera configuration" />
 
-      <main className="container mx-auto px-6 py-8 max-w-4xl">
+      <main className="container mx-auto px-6 py-8 pb-20 max-w-4xl">
         <div className="mb-6">
           <Link href="/cameras">
             <Button variant="ghost" size="sm">
@@ -280,6 +297,255 @@ export default function EditCameraPage() {
                   onCheckedChange={(checked) => setFormData({...formData, enabled: checked})}
                 />
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Motion Detection Configuration */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Motion Detection Configuration</CardTitle>
+              <CardDescription>Configure motion detection settings for this camera</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="motion_enabled">Enable Motion Detection</Label>
+                  <p className="text-sm text-muted-foreground">Detect motion in video frames</p>
+                </div>
+                <Switch
+                  id="motion_enabled"
+                  checked={formData.motion_detection?.enabled ?? false}
+                  onCheckedChange={(checked) => setFormData({
+                    ...formData,
+                    motion_detection: {
+                      ...(formData.motion_detection || {}),
+                      enabled: checked
+                    }
+                  })}
+                />
+              </div>
+
+              {formData.motion_detection?.enabled && (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="algorithm">Algorithm</Label>
+                      <Select
+                        value={formData.motion_detection?.algorithm || 'MOG2_CUDA'}
+                        onValueChange={(value) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            algorithm: value as 'MOG2_CUDA' | 'MOG2' | 'KNN' | 'FRAME_DIFF'
+                          }
+                        })}
+                      >
+                        <SelectTrigger id="algorithm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="MOG2_CUDA">MOG2 (GPU)</SelectItem>
+                          <SelectItem value="MOG2">MOG2 (CPU)</SelectItem>
+                          <SelectItem value="KNN">KNN</SelectItem>
+                          <SelectItem value="FRAME_DIFF">Frame Difference</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="sensitivity">Sensitivity (0-1)</Label>
+                      <Input
+                        id="sensitivity"
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="1"
+                        value={formData.motion_detection?.sensitivity ?? 0.7}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            sensitivity: parseFloat(e.target.value)
+                          }
+                        })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="min_contour_area">Min Contour Area (px)</Label>
+                      <Input
+                        id="min_contour_area"
+                        type="number"
+                        value={formData.motion_detection?.min_contour_area ?? 500}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            min_contour_area: parseInt(e.target.value)
+                          }
+                        })}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="max_contours">Max Contours</Label>
+                      <Input
+                        id="max_contours"
+                        type="number"
+                        value={formData.motion_detection?.max_contours ?? 10}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            max_contours: parseInt(e.target.value)
+                          }
+                        })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="frame_skip">Frame Skip</Label>
+                      <Input
+                        id="frame_skip"
+                        type="number"
+                        value={formData.motion_detection?.frame_skip ?? 1}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            frame_skip: parseInt(e.target.value)
+                          }
+                        })}
+                      />
+                      <p className="text-xs text-muted-foreground">Process 1 in N frames</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="blur_size">Blur Size</Label>
+                      <Input
+                        id="blur_size"
+                        type="number"
+                        value={formData.motion_detection?.blur_size ?? 5}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            blur_size: parseInt(e.target.value)
+                          }
+                        })}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="history">History Frames</Label>
+                      <Input
+                        id="history"
+                        type="number"
+                        value={formData.motion_detection?.history ?? 500}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            history: parseInt(e.target.value)
+                          }
+                        })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="var_threshold">Variance Threshold</Label>
+                      <Input
+                        id="var_threshold"
+                        type="number"
+                        value={formData.motion_detection?.var_threshold ?? 16}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            var_threshold: parseFloat(e.target.value)
+                          }
+                        })}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="cooldown_seconds">Cooldown (seconds)</Label>
+                      <Input
+                        id="cooldown_seconds"
+                        type="number"
+                        value={formData.motion_detection?.cooldown_seconds ?? 5}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            cooldown_seconds: parseInt(e.target.value)
+                          }
+                        })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="max_frame_width">Max Frame Width</Label>
+                      <Input
+                        id="max_frame_width"
+                        type="number"
+                        placeholder="0 = original"
+                        value={formData.motion_detection?.max_frame_width ?? 0}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            max_frame_width: parseInt(e.target.value)
+                          }
+                        })}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="max_frame_height">Max Frame Height</Label>
+                      <Input
+                        id="max_frame_height"
+                        type="number"
+                        placeholder="0 = original"
+                        value={formData.motion_detection?.max_frame_height ?? 0}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          motion_detection: {
+                            ...(formData.motion_detection || {}),
+                            max_frame_height: parseInt(e.target.value)
+                          }
+                        })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label htmlFor="detect_shadows">Detect Shadows</Label>
+                      <p className="text-sm text-muted-foreground">Use shadow detection (may reduce false positives)</p>
+                    </div>
+                    <Switch
+                      id="detect_shadows"
+                      checked={formData.motion_detection?.detect_shadows ?? true}
+                      onCheckedChange={(checked) => setFormData({
+                        ...formData,
+                        motion_detection: {
+                          ...(formData.motion_detection || {}),
+                          detect_shadows: checked
+                        }
+                      })}
+                    />
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
 

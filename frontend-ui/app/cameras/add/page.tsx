@@ -279,7 +279,7 @@ export default function AddCameraPage() {
                         onValueChange={(value) =>
                           setFormData({
                             ...formData,
-                            motion_detection: {...formData.motion_detection!, algorithm: value}
+                            motion_detection: {...formData.motion_detection!, algorithm: value as 'MOG2_CUDA' | 'MOG2' | 'KNN' | 'FRAME_DIFF'}
                           })
                         }
                       >

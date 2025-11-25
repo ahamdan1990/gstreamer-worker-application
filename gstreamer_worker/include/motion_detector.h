@@ -70,6 +70,17 @@ public:
     bool process_frame(const cv::Mat& frame);
 
     /**
+     * @brief Process a video frame for motion detection (GPU input - ZERO-COPY)
+     * @param d_frame Input frame on GPU (CUDA GpuMat)
+     * @return true if motion was detected in this frame
+     *
+     * This method processes frames that are already on the GPU, avoiding
+     * CPU copies for maximum performance. All processing is done on GPU
+     * until contour analysis which downloads only the tiny foreground mask.
+     */
+    bool process_frame_cuda(const cv::cuda::GpuMat& d_frame);
+
+    /**
      * @brief Update configuration at runtime
      * @param config New configuration
      */

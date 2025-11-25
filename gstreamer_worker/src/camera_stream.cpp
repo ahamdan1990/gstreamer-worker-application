@@ -1,5 +1,6 @@
 #include "camera_stream.h"
 #include "motion_detector.h"
+#include "face_detector.h"
 #include "logger.h"
 
 #include <gst/app/gstappsink.h>
@@ -15,14 +16,17 @@ CameraStream::CameraStream(
     const CameraConfig& config,
     StateCallback on_state_changed,
     ErrorCallback on_error,
-    MotionEventCallback on_motion
+    MotionEventCallback on_motion,
+    FaceEventCallback on_face
 )
     : config_(config)
     , log_tag_("CameraStream." + config.camera_id)
     , on_state_changed_(std::move(on_state_changed))
     , on_error_(std::move(on_error))
     , on_motion_(std::move(on_motion))
+    , on_face_(std::move(on_face))
     , motion_detection_enabled_(false)
+    , face_detection_enabled_(false)
     , state_(StreamState::STOPPED)
     , running_(false)
     , reconnect_attempts_(0)
@@ -58,6 +62,27 @@ CameraStream::CameraStream(
             LOG_INFO(log_tag_, "Motion detection initialized");
         } catch (const std::exception& e) {
             LOG_ERROR(log_tag_, std::string("Failed to initialize motion detection: ") + e.what());
+        }
+    }
+
+    // Initialize face detector if enabled
+    if (config_.face_detection.enabled) {
+        try {
+            face_detector_ = std::make_unique<FaceDetector>(
+                config_.camera_id,
+                config_.face_detection,
+                [this](const FaceEvent& event) {
+                    // Face detection event callback
+                    // Forward to user callback
+                    if (on_face_) {
+                        on_face_(event);
+                    }
+                }
+            );
+            face_detection_enabled_ = true;
+            LOG_INFO(log_tag_, "Face detection initialized");
+        } catch (const std::exception& e) {
+            LOG_ERROR(log_tag_, std::string("Failed to initialize face detection: ") + e.what());
         }
     }
 
@@ -661,25 +686,36 @@ void CameraStream::process_motion_frame(GstSample* sample) {
             return;
         }
 
-        // Map buffer to access data
+        // Map buffer to access data (READ-ONLY)
         GstMapInfo map;
         if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
             return;
         }
 
-        // Create OpenCV Mat from buffer data (BGR format) and make a deep copy
-        // IMPORTANT: We must clone the frame because:
-        // 1. The original Mat is just a view into GStreamer's buffer memory
-        // 2. CUDA operations require properly allocated, continuous memory
-        // 3. GStreamer's buffer must be unmapped quickly to avoid blocking the pipeline
+        // Create OpenCV Mat view of buffer data (BGR format)
         cv::Mat frame_view(height, width, CV_8UC3, map.data);
-        cv::Mat frame = frame_view.clone();  // Deep copy into OpenCV's own memory
 
-        // Unmap buffer immediately after cloning (don't hold it during processing)
+        // NOTE: Drawing bounding boxes on the appsink buffer causes pipeline issues.
+        // The appsink is for analysis only. To add visual overlays to the live video,
+        // we would need to use GStreamer overlay elements (cairooverlay, textoverlay, etc.)
+        // or implement a custom GStreamer element that draws on the display branch.
+
+        // ZERO-COPY GPU UPLOAD: Upload once to GPU, reuse buffer across frames
+        // Thread-local ensures each camera thread has its own GPU buffer (no races)
+        // This eliminates the 6.2MB CPU copy and enables full GPU processing
+        static thread_local cv::cuda::GpuMat d_frame;
+        d_frame.upload(frame_view);  // Single upload to GPU
+
+        // Unmap buffer immediately after upload (pipeline no longer blocked)
         gst_buffer_unmap(buffer, &map);
 
-        // Process the cloned frame for motion detection
-        motion_detector_->process_frame(frame);
+        // Process motion detection on GPU - ZERO CPU COPIES until final contour analysis!
+        motion_detector_->process_frame_cuda(d_frame);
+
+        // Process face detection on GPU - REUSES the same d_frame buffer (zero-copy!)
+        if (face_detector_ && face_detection_enabled_.load()) {
+            face_detector_->process_frame_cuda(d_frame);
+        }
 
         // Update metrics
         {
@@ -727,6 +763,39 @@ void CameraStream::update_motion_config(const MotionDetectionConfig& config) {
     motion_detector_->update_config(config);
     config_.motion_detection = config;
     LOG_INFO(log_tag_, "Motion detection configuration updated");
+}
+
+void CameraStream::enable_face_detection(bool enable) {
+    if (!face_detector_) {
+        LOG_WARNING(log_tag_, "Face detector not initialized");
+        return;
+    }
+
+    bool was_enabled = face_detection_enabled_.exchange(enable);
+    if (was_enabled != enable) {
+        LOG_INFO(log_tag_, std::string("Face detection ") +
+                 (enable ? "enabled" : "disabled"));
+
+        if (enable) {
+            // Reset face detector when enabling
+            face_detector_->reset();
+        }
+    }
+}
+
+bool CameraStream::is_face_detection_enabled() const {
+    return face_detection_enabled_.load();
+}
+
+void CameraStream::update_face_config(const FaceDetectionConfig& config) {
+    if (!face_detector_) {
+        LOG_WARNING(log_tag_, "Face detector not initialized");
+        return;
+    }
+
+    face_detector_->update_config(config);
+    config_.face_detection = config;
+    LOG_INFO(log_tag_, "Face detection configuration updated");
 }
 
 } // namespace gstreamer_worker

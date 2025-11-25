@@ -57,6 +57,56 @@ struct MotionDetectionConfig {
 };
 
 /**
+ * @brief Face detection configuration
+ */
+struct FaceDetectionConfig {
+    // Enable/disable face detection
+    bool enabled = false;
+
+    // Model configuration
+    std::string model_path = "models/scrfd/scrfd_10g_bnkps.onnx";
+    int input_size = 640;  // Model input size (640x640)
+
+    // Detection parameters
+    float confidence_threshold = 0.5f;  // Minimum confidence to accept detection
+    float nms_threshold = 0.4f;         // Non-Maximum Suppression IoU threshold
+
+    // Processing optimization
+    int frame_skip = 3;  // Process every Nth frame (higher = less frequent detection)
+    int max_frame_width = 1280;   // Resize before detection (0 = no resize)
+    int max_frame_height = 720;
+
+    // Region of Interest (optional - if width/height are 0, uses full frame)
+    MotionROI roi;
+
+    // Event filtering
+    float min_face_size = 0.02f;  // Minimum face size as % of frame (0.02 = 2%)
+    int max_faces = 20;           // Maximum faces to detect per frame
+    int required_frames = 2;      // Consecutive frames to trigger event
+    double cooldown_seconds = 2.0;  // Minimum time between face events
+
+    // Performance
+    bool use_tensorrt = true;     // Use TensorRT execution provider
+    bool use_cuda = true;          // Use CUDA execution provider (fallback from TensorRT)
+    int max_batch_size = 1;        // Batch size for inference
+
+    /**
+     * @brief Validate configuration
+     */
+    bool validate() const {
+        if (confidence_threshold < 0.0f || confidence_threshold > 1.0f) return false;
+        if (nms_threshold < 0.0f || nms_threshold > 1.0f) return false;
+        if (frame_skip < 1) return false;
+        if (min_face_size < 0.0f || min_face_size > 1.0f) return false;
+        if (max_faces < 1) return false;
+        if (required_frames < 1) return false;
+        if (cooldown_seconds < 0.0) return false;
+        if (input_size <= 0) return false;
+        return true;
+    }
+};
+
+/**
  * @brief Configuration for a single camera stream
  */
 struct CameraConfig {
@@ -92,6 +142,9 @@ struct CameraConfig {
 
     // Motion detection
     MotionDetectionConfig motion_detection;
+
+    // Face detection
+    FaceDetectionConfig face_detection;
 
     /**
      * @brief Get RTSP URL with credentials if provided

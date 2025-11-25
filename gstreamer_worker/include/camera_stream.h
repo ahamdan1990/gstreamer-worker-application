@@ -17,6 +17,7 @@ namespace gstreamer_worker {
 
 // Forward declarations
 class MotionDetector;
+class FaceDetector;
 
 /**
  * @brief Callback for state changes
@@ -32,6 +33,11 @@ using ErrorCallback = std::function<void(const std::string& camera_id, const std
  * @brief Callback for motion events
  */
 using MotionEventCallback = std::function<void(const MotionEvent& event)>;
+
+/**
+ * @brief Callback for face detection events
+ */
+using FaceEventCallback = std::function<void(const FaceEvent& event)>;
 
 /**
  * @brief Individual camera stream handler with production-grade error handling
@@ -52,12 +58,14 @@ public:
      * @param on_state_changed Callback for state changes
      * @param on_error Callback for errors
      * @param on_motion Callback for motion events
+     * @param on_face Callback for face detection events
      */
     CameraStream(
         const CameraConfig& config,
         StateCallback on_state_changed = nullptr,
         ErrorCallback on_error = nullptr,
-        MotionEventCallback on_motion = nullptr
+        MotionEventCallback on_motion = nullptr,
+        FaceEventCallback on_face = nullptr
     );
 
     /**
@@ -123,6 +131,21 @@ public:
      */
     void update_motion_config(const MotionDetectionConfig& config);
 
+    /**
+     * @brief Enable or disable face detection at runtime
+     */
+    void enable_face_detection(bool enable);
+
+    /**
+     * @brief Check if face detection is enabled
+     */
+    bool is_face_detection_enabled() const;
+
+    /**
+     * @brief Update face detection configuration
+     */
+    void update_face_config(const FaceDetectionConfig& config);
+
 private:
     // Configuration
     CameraConfig config_;
@@ -132,6 +155,7 @@ private:
     StateCallback on_state_changed_;
     ErrorCallback on_error_;
     MotionEventCallback on_motion_;
+    FaceEventCallback on_face_;
 
     // GStreamer components
     GstElement* pipeline_ = nullptr;
@@ -142,6 +166,10 @@ private:
     // Motion detection
     std::unique_ptr<MotionDetector> motion_detector_;
     std::atomic<bool> motion_detection_enabled_;
+
+    // Face detection
+    std::unique_ptr<FaceDetector> face_detector_;
+    std::atomic<bool> face_detection_enabled_;
 
     // State management
     std::atomic<StreamState> state_;

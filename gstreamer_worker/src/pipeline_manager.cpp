@@ -13,12 +13,14 @@ PipelineManager::PipelineManager(
     const PipelineManagerConfig& config,
     StateCallback on_state_changed,
     ErrorCallback on_error,
-    MotionEventCallback on_motion
+    MotionEventCallback on_motion,
+    FaceEventCallback on_face
 )
     : config_(config)
     , on_state_changed_(std::move(on_state_changed))
     , on_error_(std::move(on_error))
     , on_motion_(std::move(on_motion))
+    , on_face_(std::move(on_face))
     , running_(false)
 {
     if (!config_.validate()) {
@@ -68,7 +70,8 @@ bool PipelineManager::add_camera(const CameraConfig& config) {
             [this](const std::string& camera_id, const std::string& error) {
                 handle_error(camera_id, error);
             },
-            on_motion_  // Pass motion callback directly
+            on_motion_,  // Pass motion callback directly
+            on_face_     // Pass face callback directly
         );
 
         streams_[config.camera_id] = std::move(stream);

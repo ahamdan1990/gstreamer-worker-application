@@ -39,6 +39,23 @@
         "required_frames": 3,
         "max_frame_width": 640,
         "max_frame_height": 480
+      },
+      "face_detection": {
+        "enabled": true,
+        "model_path": "models/scrfd/scrfd_10g_bnkps.onnx",
+        "input_size": 640,
+        "confidence_threshold": 0.3,
+        "nms_threshold": 0.4,
+        "frame_skip": 3,
+        "max_frame_width": 1280,
+        "max_frame_height": 720,
+        "min_face_size": 0.02,
+        "max_faces": 20,
+        "required_frames": 2,
+        "cooldown_seconds": 2.0,
+        "use_tensorrt": true,
+        "use_cuda": true,
+        "max_batch_size": 1
       }
     }
   ]

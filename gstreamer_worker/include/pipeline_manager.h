@@ -37,12 +37,14 @@ public:
      * @param on_state_changed Global callback for state changes
      * @param on_error Global callback for errors
      * @param on_motion Global callback for motion events
+     * @param on_face Global callback for face detection events
      */
     PipelineManager(
         const PipelineManagerConfig& config = PipelineManagerConfig(),
         StateCallback on_state_changed = nullptr,
         ErrorCallback on_error = nullptr,
-        MotionEventCallback on_motion = nullptr
+        MotionEventCallback on_motion = nullptr,
+        FaceEventCallback on_face = nullptr
     );
 
     /**
@@ -153,6 +155,7 @@ private:
     StateCallback on_state_changed_;
     ErrorCallback on_error_;
     MotionEventCallback on_motion_;
+    FaceEventCallback on_face_;
 
     // Event broadcaster for WebSocket events
     std::shared_ptr<EventBroadcaster> event_broadcaster_;

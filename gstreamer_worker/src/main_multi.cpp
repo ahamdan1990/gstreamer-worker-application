@@ -52,6 +52,45 @@ void on_motion_detected(const MotionEvent& event) {
     LOG_INFO("MotionEvent", ss.str());
 }
 
+// Face detection event callback
+void on_face_detected(const FaceEvent& event) {
+    // Log face detection event with detailed information
+    std::stringstream ss;
+    ss << "\n╔══════════════════════════════════════════════╗\n";
+    ss << "║         🎭 FACE DETECTED                     ║\n";
+    ss << "╠══════════════════════════════════════════════╣\n";
+    ss << "║ Camera: " << std::left << std::setw(35) << event.camera_id << "║\n";
+    ss << "║ Number of Faces: " << std::setw(27) << event.num_faces << "║\n";
+    ss << "║ Timestamp: " << std::setw(32) << std::fixed << std::setprecision(3) << event.timestamp << "║\n";
+    ss << "╠══════════════════════════════════════════════╣\n";
+
+    // List each detected face
+    for (int i = 0; i < event.num_faces && i < 5; i++) {  // Show max 5 faces
+        const auto& face = event.faces[i];
+        ss << "║ Face #" << (i + 1) << "                                     ║\n";
+        ss << "║   Confidence: " << std::setw(29) << std::fixed << std::setprecision(1) << (face.confidence * 100.0) << "%" << "║\n";
+        ss << "║   BBox: [" << std::fixed << std::setprecision(3)
+           << face.bbox.x << "," << face.bbox.y << " "
+           << face.bbox.width << "x" << face.bbox.height << "]";
+
+        // Pad to align with border
+        int bbox_len = ss.str().length() - ss.str().rfind("║   BBox:") - 8;
+        ss << std::string(std::max(0, 35 - bbox_len), ' ') << "║\n";
+
+        if (i < event.num_faces - 1 && i < 4) {
+            ss << "║                                              ║\n";
+        }
+    }
+
+    if (event.num_faces > 5) {
+        ss << "║   ... and " << (event.num_faces - 5) << " more faces               ║\n";
+    }
+
+    ss << "╚══════════════════════════════════════════════╝\n";
+
+    LOG_INFO("FaceEvent", ss.str());
+}
+
 void print_usage(const char* program_name) {
     std::cout << "Usage: " << program_name << " [options]\n\n"
               << "Options:\n"
@@ -222,7 +261,7 @@ int main(int argc, char* argv[]) {
         std::cout << "\nPress Ctrl+C to stop\n" << std::endl;
 
         // Create pipeline manager
-        PipelineManager manager(manager_config, on_state_changed, on_error, on_motion_detected);
+        PipelineManager manager(manager_config, on_state_changed, on_error, on_motion_detected, on_face_detected);
 
         // Add all cameras
         auto add_results = manager.add_cameras(cameras);

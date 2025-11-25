@@ -3,6 +3,7 @@
 
 #include <string>
 #include <cstdint>
+#include <vector>
 
 namespace gstreamer_worker {
 
@@ -102,6 +103,55 @@ inline std::string motion_algorithm_to_string(MotionAlgorithm algo) {
         default: return "UNKNOWN";
     }
 }
+
+/**
+ * @brief Bounding box for face detection (normalized coordinates 0-1)
+ */
+struct FaceBoundingBox {
+    float x = 0.0f;       // Top-left x coordinate (normalized)
+    float y = 0.0f;       // Top-left y coordinate (normalized)
+    float width = 0.0f;   // Box width (normalized)
+    float height = 0.0f;  // Box height (normalized)
+
+    bool is_valid() const {
+        return width > 0.0f && height > 0.0f;
+    }
+};
+
+/**
+ * @brief Facial landmark point (5 keypoints: left eye, right eye, nose, left mouth, right mouth)
+ */
+struct FaceLandmark {
+    float x = 0.0f;  // X coordinate (normalized)
+    float y = 0.0f;  // Y coordinate (normalized)
+};
+
+/**
+ * @brief Single face detection result
+ */
+struct FaceDetection {
+    FaceBoundingBox bbox;                    // Face bounding box
+    float confidence = 0.0f;                 // Detection confidence [0-1]
+    FaceLandmark landmarks[5];               // 5 facial keypoints
+
+    // Additional quality metrics
+    float blur_score = 0.0f;                 // Face quality: blur
+    float brightness_score = 0.0f;           // Face quality: brightness
+
+    FaceDetection() = default;
+};
+
+/**
+ * @brief Face detection event (multiple faces in one frame)
+ */
+struct FaceEvent {
+    std::string camera_id;
+    double timestamp = 0.0;
+    int num_faces = 0;
+    std::vector<FaceDetection> faces;
+
+    FaceEvent() = default;
+};
 
 } // namespace gstreamer_worker
 
