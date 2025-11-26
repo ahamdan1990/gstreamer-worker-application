@@ -377,6 +377,62 @@ bool ConfigLoader::load_from_string(
                         cam.face_detection.max_saves_per_event = face_json["max_saves_per_event"].get<int>();
                     }
 
+                    // Blur detection configuration
+                    if (face_json.contains("enable_blur_detection")) {
+                        cam.face_detection.enable_blur_detection = face_json["enable_blur_detection"].get<bool>();
+                    }
+                    if (face_json.contains("min_laplacian_variance")) {
+                        cam.face_detection.min_laplacian_variance = face_json["min_laplacian_variance"].get<float>();
+                    }
+                    if (face_json.contains("blur_kernel_size")) {
+                        cam.face_detection.blur_kernel_size = face_json["blur_kernel_size"].get<int>();
+                    }
+
+                    // Motion-triggered detection configuration
+                    if (face_json.contains("motion_triggered_detection")) {
+                        cam.face_detection.motion_triggered_detection = face_json["motion_triggered_detection"].get<bool>();
+                    }
+                    if (face_json.contains("motion_detection_cooldown")) {
+                        cam.face_detection.motion_detection_cooldown = face_json["motion_detection_cooldown"].get<float>();
+                    }
+
+                    // CompreFace configuration
+                    if (face_json.contains("enable_compreface")) {
+                        cam.face_detection.enable_compreface = face_json["enable_compreface"].get<bool>();
+                    }
+                    if (face_json.contains("compreface_url")) {
+                        cam.face_detection.compreface_url = face_json["compreface_url"].get<std::string>();
+                    }
+                    if (face_json.contains("compreface_api_key")) {
+                        cam.face_detection.compreface_api_key = face_json["compreface_api_key"].get<std::string>();
+                    }
+                    if (face_json.contains("compreface_subject")) {
+                        cam.face_detection.compreface_subject = face_json["compreface_subject"].get<std::string>();
+                    }
+                    if (face_json.contains("compreface_timeout_ms")) {
+                        cam.face_detection.compreface_timeout_ms = face_json["compreface_timeout_ms"].get<int>();
+                    }
+                    if (face_json.contains("compreface_max_queue_size")) {
+                        cam.face_detection.compreface_max_queue_size = face_json["compreface_max_queue_size"].get<int>();
+                    }
+
+                    // Visualization configuration
+                    if (face_json.contains("enable_visualization")) {
+                        cam.face_detection.enable_visualization = face_json["enable_visualization"].get<bool>();
+                    }
+                    if (face_json.contains("draw_landmarks")) {
+                        cam.face_detection.draw_landmarks = face_json["draw_landmarks"].get<bool>();
+                    }
+                    if (face_json.contains("draw_confidence")) {
+                        cam.face_detection.draw_confidence = face_json["draw_confidence"].get<bool>();
+                    }
+                    if (face_json.contains("box_thickness")) {
+                        cam.face_detection.box_thickness = face_json["box_thickness"].get<int>();
+                    }
+                    if (face_json.contains("font_scale")) {
+                        cam.face_detection.font_scale = face_json["font_scale"].get<float>();
+                    }
+
                     // ROI configuration (optional)
                     if (face_json.contains("roi")) {
                         const auto& roi_json = face_json["roi"];

@@ -3,6 +3,7 @@
 
 #include "config.h"
 #include "types.h"
+#include "compreface_client.h"
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/cuda.hpp>
@@ -126,12 +127,39 @@ public:
      */
     std::vector<FaceDetection> get_latest_detections() const;
 
+    /**
+     * @brief Person tracking information (for analytics and cross-camera tracking)
+     */
+    struct PersonTrackingInfo {
+        std::string subject;          // Person identity
+        float recognition_confidence; // Recognition score
+        bool is_recognized;           // Whether identity is confirmed
+        double duration_seconds;      // How long tracked
+        int frames_tracked;           // Number of frames
+        FaceBoundingBox current_bbox; // Current position
+    };
+
+    /**
+     * @brief Get all currently tracked persons with identity and duration
+     * @return Vector of person tracking information
+     *
+     * Use this for:
+     * - Analytics dashboards
+     * - Cross-camera tracking
+     * - Duration monitoring
+     * - Identity reporting
+     */
+    std::vector<PersonTrackingInfo> get_tracked_persons() const;
+
 private:
     // Configuration
     std::string camera_id_;
     FaceDetectionConfig config_;
     mutable std::mutex config_mutex_;
     FaceCallback on_face_;
+
+    // CompreFace client for face recognition
+    std::unique_ptr<CompreFaceClient> compreface_client_;
 
     // ONNX Runtime session
     std::unique_ptr<Ort::Env> env_;
@@ -163,12 +191,29 @@ private:
     // Face tracking (to avoid re-detecting same faces)
     struct TrackedFace {
         FaceBoundingBox bbox;
+        std::chrono::steady_clock::time_point first_seen;
         std::chrono::steady_clock::time_point last_seen;
         int frames_tracked = 0;
+
+        // Identity information from CompreFace
+        std::string subject = "unknown";      // Recognized person name/ID
+        float recognition_confidence = 0.0f;  // Recognition similarity score
+        bool is_recognized = false;           // Whether identity is confirmed
+        std::string face_id;                  // CompreFace face ID
+        bool crop_saved = false;              // Whether high-quality crop has been saved
+        int recognition_attempts = 0;         // Number of recognition attempts (for retry logic)
+        int failed_recognitions = 0;          // Number of failed recognition attempts
+
+        // Duration tracking
+        double get_duration_seconds() const {
+            auto duration = std::chrono::duration<double>(last_seen - first_seen);
+            return duration.count();
+        }
     };
     std::vector<TrackedFace> tracked_faces_;
     double face_tracking_timeout_ = 15.0;  // Remove tracked faces after 15 seconds (increased)
-    float face_tracking_iou_threshold_ = 0.2f;  // IoU threshold for matching faces (more lenient)
+    float face_tracking_iou_threshold_ = 0.35f;  // IoU threshold for matching faces (better separation)
+    const int MAX_RECOGNITION_ATTEMPTS = 3;  // Max retry attempts per person
 
     mutable std::mutex face_mutex_;
 
@@ -298,6 +343,45 @@ private:
      * Updates tracked faces, removes stale tracks, adds new faces.
      */
     void update_face_tracking(const std::vector<FaceDetection>& detections);
+
+    /**
+     * @brief Calculate blur score using Laplacian variance
+     * @param face_crop Face image to analyze
+     * @return Laplacian variance (higher = sharper image)
+     *
+     * Uses Laplacian operator to detect edges. Blurry images have low variance.
+     * Typical thresholds: <50 very blurry, 50-100 slightly blurry, >100 sharp
+     */
+    double calculate_blur_score(const cv::Mat& face_crop);
+
+    /**
+     * @brief Check if a face is frontal and good quality
+     * @param detection Face detection with landmarks
+     * @return true if face is frontal, false if profile/partial/back-of-head
+     *
+     * Uses 5-point landmarks to determine face orientation:
+     * - Both eyes visible and symmetric
+     * - Eyes above nose (not inverted)
+     * - Nose centered between eyes
+     * - Face not at extreme angle (pitch/yaw)
+     */
+    bool is_frontal_face(const FaceDetection& detection);
+
+    /**
+     * @brief Handle CompreFace recognition results
+     * @param camera_id Camera identifier
+     * @param face_crop_path Path to face crop image
+     * @param result Recognition result (if successful)
+     * @param error Error message (if failed)
+     *
+     * Updates tracked faces with recognition information
+     */
+    void on_recognition_result(
+        const std::string& camera_id,
+        const std::string& face_crop_path,
+        const std::optional<RecognitionResult>& result,
+        const std::string& error
+    );
 };
 
 } // namespace gstreamer_worker

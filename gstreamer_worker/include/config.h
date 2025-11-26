@@ -97,6 +97,30 @@ struct FaceDetectionConfig {
     float min_save_confidence = 0.4f;                // Minimum confidence to save face
     int max_saves_per_event = 3;                     // Max faces to save per event
 
+    // Face quality filtering (blur detection)
+    bool enable_blur_detection = true;               // Enable blur detection for quality filtering
+    float min_laplacian_variance = 100.0f;           // Minimum Laplacian variance (higher = sharper)
+    int blur_kernel_size = 3;                        // Kernel size for blur detection
+
+    // Motion-triggered face detection (performance optimization)
+    bool motion_triggered_detection = true;          // Only detect faces when motion is detected
+    float motion_detection_cooldown = 2.0f;          // Continue detecting for N seconds after motion stops
+
+    // CompreFace integration
+    bool enable_compreface = false;                  // Enable face recognition via CompreFace
+    std::string compreface_url = "http://localhost:8000";  // CompreFace API URL
+    std::string compreface_api_key = "";             // CompreFace API key
+    std::string compreface_subject = "unknown";      // Default subject name
+    int compreface_timeout_ms = 5000;                // HTTP request timeout
+    int compreface_max_queue_size = 100;             // Max faces in recognition queue
+
+    // Live visualization settings
+    bool enable_visualization = false;                // Draw bounding boxes on live feed
+    bool draw_landmarks = true;                       // Draw facial landmarks
+    bool draw_confidence = true;                      // Draw confidence scores
+    int box_thickness = 2;                            // Bounding box line thickness
+    float font_scale = 0.5f;                          // Text font scale
+
     /**
      * @brief Validate configuration
      */

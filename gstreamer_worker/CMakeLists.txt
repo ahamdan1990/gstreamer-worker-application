@@ -25,6 +25,12 @@ pkg_check_modules(GSTREAMER REQUIRED
 # GLib
 pkg_check_modules(GLIB REQUIRED glib-2.0>=2.56)
 
+# Cairo for overlay graphics
+pkg_check_modules(CAIRO REQUIRED cairo)
+
+# libcurl for HTTP requests (CompreFace client)
+find_package(CURL REQUIRED)
+
 # OpenCV with CUDA support
 find_package(OpenCV 4.0 REQUIRED
     COMPONENTS
@@ -32,6 +38,7 @@ find_package(OpenCV 4.0 REQUIRED
         imgproc
         imgcodecs
         video
+        highgui
         cudabgsegm
         cudaimgproc
         cudawarping
@@ -124,6 +131,7 @@ set(SOURCES
     src/logger.cpp
     src/motion_detector.cpp
     src/face_detector.cpp
+    src/compreface_client.cpp
     src/websocket_server.cpp
     src/event_broadcaster.cpp
 )
@@ -144,6 +152,7 @@ set(HEADERS
     include/api_server.h
     include/motion_detector.h
     include/face_detector.h
+    include/compreface_client.h
     include/websocket_server.h
     include/event_broadcaster.h
 )
@@ -153,8 +162,10 @@ add_library(gstreamer_worker_lib STATIC ${SOURCES} ${HEADERS})
 target_link_libraries(gstreamer_worker_lib
     ${GSTREAMER_LIBRARIES}
     ${GLIB_LIBRARIES}
+    ${CAIRO_LIBRARIES}
     ${OpenCV_LIBS}
     ${ONNXRUNTIME_LIBRARIES}
+    CURL::libcurl
     Threads::Threads
     nlohmann_json::nlohmann_json
     ixwebsocket

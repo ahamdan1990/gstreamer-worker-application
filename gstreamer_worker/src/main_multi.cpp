@@ -36,20 +36,9 @@ void on_error(const std::string& camera_id, const std::string& error) {
 
 // Motion event callback
 void on_motion_detected(const MotionEvent& event) {
-    // Log motion event with detailed information
-    std::stringstream ss;
-    ss << "\n╔══════════════════════════════════════════════╗\n";
-    ss << "║         MOTION DETECTED                      ║\n";
-    ss << "╠══════════════════════════════════════════════╣\n";
-    ss << "║ Camera: " << std::left << std::setw(35) << event.camera_id << "║\n";
-    ss << "║ Motion Area: " << std::setw(30) << (std::to_string(event.motion_area) + " pixels") << "║\n";
-    ss << "║ Contours: " << std::setw(33) << event.num_contours << "║\n";
-    ss << "║ Confidence: " << std::setw(31) << std::fixed << std::setprecision(2) << (event.confidence * 100.0) << "%" << "║\n";
-    ss << "║ Bounding Box: [" << event.bounding_box.x << "," << event.bounding_box.y
-       << " " << event.bounding_box.width << "x" << event.bounding_box.height << "]" << std::setw(10) << "║\n";
-    ss << "╚══════════════════════════════════════════════╝\n";
-
-    LOG_INFO("MotionEvent", ss.str());
+    // Motion events are used to trigger face detection but not logged to reduce noise
+    // Uncomment below for debugging motion detection issues
+    // LOG_DEBUG("Motion", "Camera: " + event.camera_id + " - Area: " + std::to_string(event.motion_area) + " pixels");
 }
 
 // Face detection event callback

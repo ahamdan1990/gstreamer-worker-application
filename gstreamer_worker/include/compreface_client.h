@@ -30,9 +30,10 @@ struct CompreFaceConfig {
     std::string base_url = "http://localhost:8000";
     std::string api_key;
     std::string recognition_service_url;  // Full URL: base_url + /api/v1/recognition/recognize
-    float similarity_threshold = 0.7f;     // Minimum similarity for match
+    float similarity_threshold = 0.9f;     // Minimum similarity for match (90% - enterprise strict matching)
     int timeout_ms = 5000;                 // HTTP timeout
     int max_retries = 3;                   // Retry failed requests
+    int max_queue_size = 100;              // Max faces in recognition queue
     bool cache_results = true;             // Cache recent recognitions
     int cache_duration_seconds = 60;       // Cache duration
 

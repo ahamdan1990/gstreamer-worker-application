@@ -6,6 +6,8 @@
 
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
+#include <cairo/cairo.h>
+#include <opencv2/core.hpp>
 #include <memory>
 #include <atomic>
 #include <thread>
@@ -160,6 +162,8 @@ private:
     // GStreamer components
     GstElement* pipeline_ = nullptr;
     GstElement* appsink_ = nullptr;  // For motion detection frame capture
+    GstElement* viz_appsink_ = nullptr;  // For visualization overlay (legacy)
+    GstElement* cairo_overlay_ = nullptr;  // For drawing face bboxes on live feed
     GstBus* bus_ = nullptr;
     GMainLoop* loop_ = nullptr;
 
@@ -170,6 +174,17 @@ private:
     // Face detection
     std::unique_ptr<FaceDetector> face_detector_;
     std::atomic<bool> face_detection_enabled_;
+
+    // Visualization
+    std::mutex viz_mutex_;
+    std::vector<FaceDetection> latest_detections_;
+    int viz_frame_width_ = 0;
+    int viz_frame_height_ = 0;
+
+    // Motion-triggered face detection
+    std::atomic<bool> motion_recently_detected_{false};
+    std::chrono::steady_clock::time_point last_motion_time_;
+    std::mutex motion_mutex_;
 
     // State management
     std::atomic<StreamState> state_;
@@ -246,6 +261,21 @@ private:
      * @brief Process frame for motion detection
      */
     void process_motion_frame(GstSample* sample);
+
+    /**
+     * @brief Process frame for visualization overlay
+     */
+    void process_visualization_frame(GstSample* sample);
+
+    /**
+     * @brief Draw face detections on frame
+     */
+    void draw_face_detections(cv::Mat& frame, const std::vector<FaceDetection>& detections);
+
+    /**
+     * @brief Draw face detections using Cairo on live video feed
+     */
+    void draw_cairo_overlay(cairo_t* cr);
 };
 
 } // namespace gstreamer_worker

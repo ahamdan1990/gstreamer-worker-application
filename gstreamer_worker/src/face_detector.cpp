@@ -43,10 +43,44 @@ FaceDetector::FaceDetector(
 
     // Initialize face history buffer
     face_history_.resize(config_.required_frames, false);
+
+    // Initialize CompreFace client if enabled
+    if (config_.enable_compreface) {
+        try {
+            CompreFaceConfig cf_config;
+            cf_config.base_url = config_.compreface_url;
+            cf_config.api_key = config_.compreface_api_key;
+            cf_config.timeout_ms = config_.compreface_timeout_ms;
+            cf_config.max_queue_size = config_.compreface_max_queue_size;
+
+            // Create recognition callback
+            auto recognition_callback = [this](
+                const std::string& camera_id,
+                const std::string& face_crop_path,
+                const std::optional<RecognitionResult>& result,
+                const std::string& error
+            ) {
+                this->on_recognition_result(camera_id, face_crop_path, result, error);
+            };
+
+            compreface_client_ = std::make_unique<CompreFaceClient>(cf_config, recognition_callback);
+            compreface_client_->start();
+
+            std::cout << "[FaceDetector:" << camera_id_ << "] CompreFace client initialized" << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[FaceDetector:" << camera_id_ << "] CompreFace initialization failed: "
+                      << e.what() << std::endl;
+        }
+    }
 }
 
 FaceDetector::~FaceDetector() {
     std::cout << "[FaceDetector:" << camera_id_ << "] Shutting down" << std::endl;
+
+    // Stop CompreFace client
+    if (compreface_client_) {
+        compreface_client_->stop();
+    }
 }
 
 void FaceDetector::initialize_session() {
@@ -199,22 +233,9 @@ bool FaceDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
         // Post-process outputs
         std::vector<FaceDetection> detections = postprocess(outputs, d_frame.cols, d_frame.rows);
 
-        // DEBUG: Log raw detections
-        std::cout << "[FaceDetector:" << camera_id_ << "] Raw detections: " << detections.size() << std::endl;
-        if (!detections.empty()) {
-            for (size_t i = 0; i < std::min(detections.size(), size_t(5)); i++) {
-                std::cout << "  [" << i << "] Confidence: " << detections[i].confidence
-                          << " BBox: [" << detections[i].bbox.x << "," << detections[i].bbox.y
-                          << " " << detections[i].bbox.width << "x" << detections[i].bbox.height << "]" << std::endl;
-            }
-        }
-
         // Apply NMS
-        size_t before_nms = detections.size();
         if (!detections.empty()) {
             detections = apply_nms(detections);
-            std::cout << "[FaceDetector:" << camera_id_ << "] After NMS: " << detections.size()
-                      << " (removed " << (before_nms - detections.size()) << ")" << std::endl;
         }
 
         // Filter out faces that are already being tracked
@@ -234,8 +255,6 @@ bool FaceDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
 
         // Check if we should trigger an event (only for NEW faces)
         faces_detected = !new_face_detections.empty();
-        std::cout << "[FaceDetector:" << camera_id_ << "] New faces: " << new_face_detections.size()
-                  << ", Should trigger event: " << should_trigger_event(faces_detected) << std::endl;
         if (should_trigger_event(faces_detected)) {
             // Create face event (only for NEW faces)
             FaceEvent event;
@@ -305,11 +324,6 @@ bool FaceDetector::preprocess_gpu(const cv::cuda::GpuMat& d_frame, std::vector<f
         // Convert to float and normalize for SCRFD: (pixel - 127.5) / 128.0 → [-1, 1]
         // This is equivalent to: pixel / 128.0 - 1.0
         h_frame.convertTo(h_frame, CV_32F, 1.0 / 128.0, -1.0);
-
-        std::cout << "[FaceDetector:" << camera_id_ << "] Preprocessing: "
-                  << "Input size: " << h_frame.cols << "x" << h_frame.rows
-                  << ", Channels: " << h_frame.channels()
-                  << ", Normalization: (x/128.0 - 1.0) -> [-1, 1]" << std::endl;
 
         // Reshape to CHW format (ONNX Runtime expects NCHW)
         int channels = h_frame.channels();
@@ -460,21 +474,24 @@ std::vector<FaceDetection> FaceDetector::decode_bboxes(
         }
 
         // Decode bounding box
-        // SCRFD outputs: [dx, dy, dw, dh]
-        float dx = bbox_tensor[i * 4 + 0];
-        float dy = bbox_tensor[i * 4 + 1];
-        float dw = bbox_tensor[i * 4 + 2];
-        float dh = bbox_tensor[i * 4 + 3];
+        // SCRFD 10g uses distance-based encoding: [left, top, right, bottom]
+        // These are distances from the anchor point to box edges (in strides)
+        float dist_left = bbox_tensor[i * 4 + 0];
+        float dist_top = bbox_tensor[i * 4 + 1];
+        float dist_right = bbox_tensor[i * 4 + 2];
+        float dist_bottom = bbox_tensor[i * 4 + 3];
 
-        // Apply deltas to anchor
-        float cx = anchors[i][0] + dx * anchors[i][2];
-        float cy = anchors[i][1] + dy * anchors[i][3];
-        float w = anchors[i][2] * std::exp(dw);
-        float h = anchors[i][3] * std::exp(dh);
+        // Convert distances to box coordinates
+        float left = anchors[i][0] - dist_left * stride;
+        float top = anchors[i][1] - dist_top * stride;
+        float right = anchors[i][0] + dist_right * stride;
+        float bottom = anchors[i][1] + dist_bottom * stride;
 
-        // Convert to x, y, w, h (top-left corner)
-        float x = cx - w / 2.0f;
-        float y = cy - h / 2.0f;
+        // Convert to x, y, w, h format
+        float x = left;
+        float y = top;
+        float w = right - left;
+        float h = bottom - top;
 
         // Scale to original image size (from model input size)
         float scale_x = static_cast<float>(orig_width) / config_.input_size;
@@ -491,20 +508,23 @@ std::vector<FaceDetection> FaceDetector::decode_bboxes(
         w = std::min(w, static_cast<float>(orig_width) - x);
         h = std::min(h, static_cast<float>(orig_height) - y);
 
+        // Skip invalid boxes
+        if (w <= 0 || h <= 0) {
+            continue;
+        }
+
         // Filter by minimum face size
         float face_size_ratio = (w * h) / (orig_width * orig_height);
         if (face_size_ratio < config_.min_face_size) {
             continue;
         }
 
+        // TEMPORARILY DISABLED FOR DEBUGGING
         // Filter out abnormally tall/wide faces (likely false positives)
-        // Face aspect ratio should be roughly 0.7-1.5 (width/height)
-        // Reject faces taller than 3x their width or wider than 2x their height
-        float aspect_ratio = w / h;
-        if (aspect_ratio < 0.33f || aspect_ratio > 2.0f) {
-            // Likely a false positive (too tall or too wide)
-            continue;
-        }
+        // float aspect_ratio = w / h;
+        // if (aspect_ratio < 0.5f || aspect_ratio > 2.0f) {
+        //     continue;
+        // }
 
         // Filter out faces that span too much of the frame (likely edge artifacts)
         // Real faces shouldn't take up more than 80% of frame height/width
@@ -699,6 +719,26 @@ std::vector<FaceDetection> FaceDetector::get_latest_detections() const {
     return latest_detections_;
 }
 
+std::vector<FaceDetector::PersonTrackingInfo> FaceDetector::get_tracked_persons() const {
+    std::lock_guard<std::mutex> lock(face_mutex_);
+
+    std::vector<PersonTrackingInfo> persons;
+    persons.reserve(tracked_faces_.size());
+
+    for (const auto& tracked : tracked_faces_) {
+        PersonTrackingInfo info;
+        info.subject = tracked.subject;
+        info.recognition_confidence = tracked.recognition_confidence;
+        info.is_recognized = tracked.is_recognized;
+        info.duration_seconds = tracked.get_duration_seconds();
+        info.frames_tracked = tracked.frames_tracked;
+        info.current_bbox = tracked.bbox;
+        persons.push_back(info);
+    }
+
+    return persons;
+}
+
 cv::cuda::GpuMat FaceDetector::apply_roi_cuda(const cv::cuda::GpuMat& d_frame) const {
     const auto& roi = config_.roi;
 
@@ -720,17 +760,7 @@ void FaceDetector::save_face_crops(
     const std::vector<FaceDetection>& detections,
     double event_timestamp
 ) {
-    std::cout << "[FaceDetector:" << camera_id_ << "] save_face_crops called: "
-              << "save_faces=" << config_.save_faces
-              << ", detections=" << detections.size()
-              << ", save_path=" << config_.save_path
-              << ", min_confidence=" << config_.min_save_confidence
-              << std::endl;
-
     if (!config_.save_faces || detections.empty()) {
-        std::cout << "[FaceDetector:" << camera_id_ << "] Skipping save: "
-                  << (config_.save_faces ? "no detections" : "save_faces disabled")
-                  << std::endl;
         return;
     }
 
@@ -743,23 +773,13 @@ void FaceDetector::save_face_crops(
     d_frame.download(h_frame);
 
     int saved_count = 0;
-    std::cout << "[FaceDetector:" << camera_id_ << "] Processing " << detections.size()
-              << " detections for saving (max=" << config_.max_saves_per_event << ")" << std::endl;
+    int face_number = 1;  // Counter for saved faces (increments only when face is actually saved)
 
     for (size_t i = 0; i < detections.size() && saved_count < config_.max_saves_per_event; i++) {
         const auto& detection = detections[i];
 
-        std::cout << "[FaceDetector:" << camera_id_ << "] Detection [" << i << "]: "
-                  << "confidence=" << detection.confidence
-                  << ", bbox=[" << detection.bbox.x << "," << detection.bbox.y
-                  << " " << detection.bbox.width << "x" << detection.bbox.height << "]"
-                  << std::endl;
-
         // Skip if confidence too low
         if (detection.confidence < config_.min_save_confidence) {
-            std::cout << "[FaceDetector:" << camera_id_ << "] Skipping detection [" << i
-                      << "]: confidence " << detection.confidence << " < " << config_.min_save_confidence
-                      << std::endl;
             continue;
         }
 
@@ -794,14 +814,80 @@ void FaceDetector::save_face_crops(
         // Crop face with margin
         cv::Mat face_crop = h_frame(cv::Rect(px, py, pw, ph));
 
+        // Check if this face belongs to a tracked face - implement retry logic
+        bool should_skip = false;
+        {
+            std::lock_guard<std::mutex> lock(face_mutex_);
+            for (auto& tracked : tracked_faces_) {
+                float iou = calculate_iou(detection.bbox, tracked.bbox);
+                if (iou > face_tracking_iou_threshold_) {
+                    // Skip if already successfully recognized OR max attempts reached
+                    if (tracked.is_recognized || tracked.recognition_attempts >= MAX_RECOGNITION_ATTEMPTS) {
+                        should_skip = true;
+                        std::cout << "[FaceDetector:" << camera_id_ << "] Face already processed: "
+                                  << "recognized=" << (tracked.is_recognized ? "YES" : "NO")
+                                  << ", attempts=" << tracked.recognition_attempts << std::endl;
+                        break;
+                    }
+                    // Allow retry if recognition failed and haven't reached max attempts
+                    std::cout << "[FaceDetector:" << camera_id_ << "] Retry attempt "
+                              << (tracked.recognition_attempts + 1) << "/" << MAX_RECOGNITION_ATTEMPTS << std::endl;
+                }
+            }
+        }
+
+        if (should_skip) {
+            continue;
+        }
+
+        // Check minimum face size in pixels (CompreFace needs at least 80x80)
+        const int MIN_FACE_WIDTH = 80;
+        const int MIN_FACE_HEIGHT = 80;
+        if (pw < MIN_FACE_WIDTH || ph < MIN_FACE_HEIGHT) {
+            std::cout << "[FaceDetector:" << camera_id_ << "] Skipping small face ("
+                      << pw << "x" << ph << " pixels) - too small for CompreFace (needs 80x80+)" << std::endl;
+            continue;
+        }
+
+        // Check if face is frontal (not profile/partial/back-of-head)
+        if (!is_frontal_face(detection)) {
+            // Skip non-frontal faces - only save frontal faces for recognition
+            std::cout << "[FaceDetector:" << camera_id_ << "] Skipping non-frontal face (profile/partial/turning)" << std::endl;
+            continue;
+        }
+
+        // Check blur if enabled
+        if (config_.enable_blur_detection) {
+            double blur_score = calculate_blur_score(face_crop);
+            if (blur_score < config_.min_laplacian_variance) {
+                // Skip blurry images - only save high quality for CompreFace
+                std::cout << "[FaceDetector:" << camera_id_ << "] Skipping blurry face (score: "
+                          << static_cast<int>(blur_score) << " < "
+                          << static_cast<int>(config_.min_laplacian_variance) << ")" << std::endl;
+                continue;
+            }
+        }
+
+        // Check brightness (prevent saving dark/black images from low-light)
+        cv::Scalar mean_brightness = cv::mean(face_crop);
+        double avg_brightness = (mean_brightness[0] + mean_brightness[1] + mean_brightness[2]) / 3.0;
+        const double MIN_BRIGHTNESS = 30.0;  // 0-255 scale, 30 = very dark threshold
+        if (avg_brightness < MIN_BRIGHTNESS) {
+            std::cout << "[FaceDetector:" << camera_id_ << "] Skipping dark/underexposed face (brightness: "
+                      << static_cast<int>(avg_brightness) << " < " << static_cast<int>(MIN_BRIGHTNESS)
+                      << ") - improve lighting!" << std::endl;
+            continue;
+        }
+
         // Generate filename: {camera_id}_{timestamp}_{face_num}_{confidence}.jpg
         // This format is compatible with CompreFace and easy to organize
         std::stringstream filename;
         filename << config_.save_path << "/"
                  << camera_id_ << "_"
                  << std::fixed << std::setprecision(3) << event_timestamp << "_"
-                 << "face" << (i + 1) << "_"
+                 << "face" << face_number << "_"
                  << static_cast<int>(detection.confidence * 100) << ".jpg";
+        face_number++;  // Increment for next saved face
 
         // Save face crop
         try {
@@ -811,6 +897,44 @@ void FaceDetector::save_face_crops(
                       << static_cast<int>(detection.confidence * 100) << "% confidence)"
                       << std::endl;
             saved_count++;
+
+            // Send to CompreFace for recognition
+            if (compreface_client_ && config_.enable_compreface) {
+                std::cout << "[FaceDetector:" << camera_id_ << "] Sending to CompreFace: " << filename.str() << std::endl;
+                bool queued = compreface_client_->recognize_async(
+                    camera_id_,
+                    filename.str(),
+                    detection.confidence
+                );
+                if (queued) {
+                    std::cout << "[FaceDetector:" << camera_id_ << "] Successfully queued for recognition" << std::endl;
+                } else {
+                    std::cerr << "[FaceDetector:" << camera_id_ << "] Failed to queue recognition (queue full or circuit breaker open)" << std::endl;
+                }
+            } else {
+                if (!compreface_client_) {
+                    std::cerr << "[FaceDetector:" << camera_id_ << "] CompreFace client not initialized!" << std::endl;
+                }
+                if (!config_.enable_compreface) {
+                    std::cout << "[FaceDetector:" << camera_id_ << "] CompreFace disabled in config" << std::endl;
+                }
+            }
+
+            // Increment recognition attempts for this tracked face
+            {
+                std::lock_guard<std::mutex> lock(face_mutex_);
+                for (auto& tracked : tracked_faces_) {
+                    float iou = calculate_iou(detection.bbox, tracked.bbox);
+                    if (iou > face_tracking_iou_threshold_) {
+                        tracked.crop_saved = true;
+                        tracked.recognition_attempts++;
+                        std::cout << "[FaceDetector:" << camera_id_ << "] Recognition attempt "
+                                  << tracked.recognition_attempts << " sent for this person" << std::endl;
+                        break;
+                    }
+                }
+            }
+
         } catch (const std::exception& e) {
             std::cerr << "[FaceDetector:" << camera_id_ << "] Failed to save face crop: "
                       << e.what() << std::endl;
@@ -825,19 +949,23 @@ std::vector<FaceDetection> FaceDetector::filter_tracked_faces(
 
     // Remove stale tracked faces (not seen for face_tracking_timeout_ seconds)
     auto now = std::chrono::steady_clock::now();
-    tracked_faces_.erase(
-        std::remove_if(tracked_faces_.begin(), tracked_faces_.end(),
-            [&](const TrackedFace& tf) {
-                double elapsed = std::chrono::duration<double>(now - tf.last_seen).count();
-                bool is_stale = elapsed > face_tracking_timeout_;
-                if (is_stale) {
-                    std::cout << "[FaceDetector:" << camera_id_ << "] Removing stale tracked face "
-                              << "(not seen for " << elapsed << "s)" << std::endl;
-                }
-                return is_stale;
-            }),
-        tracked_faces_.end()
-    );
+
+    // Log tracking summary for removed faces (production analytics)
+    for (auto it = tracked_faces_.begin(); it != tracked_faces_.end(); ) {
+        double elapsed = std::chrono::duration<double>(now - it->last_seen).count();
+        if (elapsed > face_tracking_timeout_) {
+            double duration = it->get_duration_seconds();
+            std::cout << "[FaceDetector:" << camera_id_ << "] Person tracking ended: "
+                      << "subject=" << it->subject
+                      << ", duration=" << std::fixed << std::setprecision(1) << duration << "s"
+                      << ", frames=" << it->frames_tracked
+                      << (it->is_recognized ? " [RECOGNIZED]" : " [UNKNOWN]")
+                      << std::endl;
+            it = tracked_faces_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 
     // Filter out detections that match existing tracked faces
     std::vector<FaceDetection> new_faces;
@@ -853,26 +981,14 @@ std::vector<FaceDetection> FaceDetector::filter_tracked_faces(
                 tracked.last_seen = now;
                 tracked.frames_tracked++;
                 tracked.bbox = detection.bbox;  // Update position
-                std::cout << "[FaceDetector:" << camera_id_ << "] Face already tracked "
-                          << "(IoU=" << iou << ", frames=" << tracked.frames_tracked << ")" << std::endl;
                 break;
             }
         }
 
         if (!is_tracked) {
             new_faces.push_back(detection);
-            std::cout << "[FaceDetector:" << camera_id_ << "] New face detected: "
-                      << "confidence=" << detection.confidence
-                      << ", bbox=[" << detection.bbox.x << "," << detection.bbox.y
-                      << " " << detection.bbox.width << "x" << detection.bbox.height << "]"
-                      << std::endl;
         }
     }
-
-    std::cout << "[FaceDetector:" << camera_id_ << "] Face tracking: "
-              << detections.size() << " detections, "
-              << tracked_faces_.size() << " tracked, "
-              << new_faces.size() << " new" << std::endl;
 
     return new_faces;
 }
@@ -897,10 +1013,164 @@ void FaceDetector::update_face_tracking(const std::vector<FaceDetection>& detect
         if (!already_tracked) {
             TrackedFace tf;
             tf.bbox = detection.bbox;
+            tf.first_seen = now;
             tf.last_seen = now;
             tf.frames_tracked = 1;
             tracked_faces_.push_back(tf);
-            std::cout << "[FaceDetector:" << camera_id_ << "] Started tracking new face" << std::endl;
+        }
+    }
+}
+
+double FaceDetector::calculate_blur_score(const cv::Mat& face_crop) {
+    // Convert to grayscale if needed
+    cv::Mat gray;
+    if (face_crop.channels() == 3) {
+        cv::cvtColor(face_crop, gray, cv::COLOR_BGR2GRAY);
+    } else {
+        gray = face_crop;
+    }
+
+    // Calculate Laplacian
+    cv::Mat laplacian;
+    cv::Laplacian(gray, laplacian, CV_64F, config_.blur_kernel_size);
+
+    // Calculate variance of Laplacian
+    cv::Scalar mean, stddev;
+    cv::meanStdDev(laplacian, mean, stddev);
+    double variance = stddev[0] * stddev[0];
+
+    return variance;
+}
+
+bool FaceDetector::is_frontal_face(const FaceDetection& detection) {
+    // SCRFD 5-point landmarks:
+    // [0] = left eye, [1] = right eye, [2] = nose, [3] = left mouth, [4] = right mouth
+
+    const auto& landmarks = detection.landmarks;
+
+    // Check if landmarks are valid (not at 0,0)
+    bool has_valid_landmarks = true;
+    for (int i = 0; i < 5; i++) {
+        if (landmarks[i].x < 0.01 && landmarks[i].y < 0.01) {
+            has_valid_landmarks = false;
+            break;
+        }
+    }
+
+    if (!has_valid_landmarks) {
+        return false;  // No landmarks = can't determine orientation
+    }
+
+    // 1. Check eye symmetry (both eyes should be visible and roughly at same height)
+    float left_eye_x = landmarks[0].x;
+    float left_eye_y = landmarks[0].y;
+    float right_eye_x = landmarks[1].x;
+    float right_eye_y = landmarks[1].y;
+
+    // Eyes should be horizontally aligned (not tilted more than 15 degrees)
+    float eye_y_diff = std::abs(left_eye_y - right_eye_y);
+    float eye_distance = std::abs(right_eye_x - left_eye_x);
+
+    if (eye_distance < 0.01) {
+        return false;  // Eyes too close = profile or bad detection
+    }
+
+    float eye_tilt_ratio = eye_y_diff / eye_distance;
+    if (eye_tilt_ratio > 0.3) {  // More than ~17 degree tilt
+        return false;
+    }
+
+    // 2. Check if eyes are above nose (detect upside-down or weird angles)
+    float nose_y = landmarks[2].y;
+    float avg_eye_y = (left_eye_y + right_eye_y) / 2.0f;
+
+    if (nose_y < avg_eye_y) {
+        return false;  // Nose above eyes = inverted or bad detection
+    }
+
+    // 3. Check nose centering (should be roughly centered between eyes for frontal face)
+    float nose_x = landmarks[2].x;
+    float eye_center_x = (left_eye_x + right_eye_x) / 2.0f;
+    float nose_offset = std::abs(nose_x - eye_center_x);
+
+    // Nose should be within 30% of inter-eye distance from center
+    if (nose_offset > eye_distance * 0.3) {
+        return false;  // Nose too far off-center = profile
+    }
+
+    // 4. Check mouth position (should be below nose and centered)
+    float left_mouth_x = landmarks[3].x;
+    float right_mouth_x = landmarks[4].x;
+    float left_mouth_y = landmarks[3].y;
+    float right_mouth_y = landmarks[4].y;
+
+    float mouth_center_y = (left_mouth_y + right_mouth_y) / 2.0f;
+
+    if (mouth_center_y < nose_y) {
+        return false;  // Mouth above nose = bad detection
+    }
+
+    // 5. Check face width vs inter-eye distance ratio
+    // For frontal faces, inter-eye distance should be roughly 40-50% of face width
+    float face_width = detection.bbox.width;
+    float eye_to_face_ratio = eye_distance / face_width;
+
+    if (eye_to_face_ratio < 0.25 || eye_to_face_ratio > 0.65) {
+        return false;  // Unusual ratio = profile or extreme angle
+    }
+
+    // All checks passed - this is a frontal face
+    return true;
+}
+
+void FaceDetector::on_recognition_result(
+    const std::string& camera_id,
+    const std::string& face_crop_path,
+    const std::optional<RecognitionResult>& result,
+    const std::string& error
+) {
+    std::lock_guard<std::mutex> lock(face_mutex_);
+
+    if (!result.has_value()) {
+        // Recognition failed - reset crop_saved to allow retry
+        if (!error.empty()) {
+            std::cerr << "[FaceDetector:" << camera_id_ << "] Recognition failed: " << error << std::endl;
+            std::cerr << "[FaceDetector:" << camera_id_ << "] Will retry with better quality image" << std::endl;
+        }
+
+        // Find the most recently saved face and mark for retry
+        for (auto& tracked : tracked_faces_) {
+            if (tracked.crop_saved && !tracked.is_recognized) {
+                tracked.crop_saved = false;  // Allow retry
+                tracked.failed_recognitions++;
+                std::cout << "[FaceDetector:" << camera_id_ << "] Reset retry flag (failed: "
+                          << tracked.failed_recognitions << ")" << std::endl;
+                break;
+            }
+        }
+        return;
+    }
+
+    const auto& recognition = result.value();
+
+    // Find the most recently updated tracked face that doesn't have recognition yet
+    // This assumes face crops are sent shortly after detection
+    for (auto& tracked : tracked_faces_) {
+        if (!tracked.is_recognized || tracked.subject == "unknown") {
+            tracked.subject = recognition.subject;
+            tracked.recognition_confidence = recognition.similarity;
+            tracked.is_recognized = recognition.is_match;
+            tracked.face_id = recognition.face_id;
+
+            std::cout << "[FaceDetector:" << camera_id_ << "] ✅ Person recognized: "
+                      << "subject=" << recognition.subject
+                      << ", similarity=" << std::fixed << std::setprecision(2) << (recognition.similarity * 100.0f) << "%"
+                      << ", match=" << (recognition.is_match ? "YES" : "NO")
+                      << " (after " << tracked.recognition_attempts << " attempts)"
+                      << std::endl;
+
+            // Only update the first unrecognized face
+            break;
         }
     }
 }
