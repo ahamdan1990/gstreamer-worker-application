@@ -3,6 +3,7 @@
 
 #include "config.h"
 #include "types.h"
+#include "person_tracker.h"
 
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
@@ -61,13 +62,15 @@ public:
      * @param on_error Callback for errors
      * @param on_motion Callback for motion events
      * @param on_face Callback for face detection events
+     * @param person_tracker Optional person tracker for enterprise tracking
      */
     CameraStream(
         const CameraConfig& config,
         StateCallback on_state_changed = nullptr,
         ErrorCallback on_error = nullptr,
         MotionEventCallback on_motion = nullptr,
-        FaceEventCallback on_face = nullptr
+        FaceEventCallback on_face = nullptr,
+        PersonTracker* person_tracker = nullptr
     );
 
     /**

@@ -4,6 +4,7 @@
 #include "config.h"
 #include "types.h"
 #include "compreface_client.h"
+#include "person_tracker.h"
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/cuda.hpp>
@@ -47,11 +48,13 @@ public:
      * @param camera_id Camera identifier
      * @param config Face detection configuration
      * @param on_face Callback for face detection events
+     * @param person_tracker Optional person tracker for enterprise tracking
      */
     FaceDetector(
         const std::string& camera_id,
         const FaceDetectionConfig& config,
-        FaceCallback on_face = nullptr
+        FaceCallback on_face = nullptr,
+        PersonTracker* person_tracker = nullptr
     );
 
     /**
@@ -160,6 +163,9 @@ private:
 
     // CompreFace client for face recognition
     std::unique_ptr<CompreFaceClient> compreface_client_;
+
+    // Person tracker for enterprise-grade tracking (not owned)
+    PersonTracker* person_tracker_;
 
     // ONNX Runtime session
     std::unique_ptr<Ort::Env> env_;

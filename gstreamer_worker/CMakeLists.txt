@@ -132,6 +132,7 @@ set(SOURCES
     src/motion_detector.cpp
     src/face_detector.cpp
     src/compreface_client.cpp
+    src/person_tracker.cpp
     src/websocket_server.cpp
     src/event_broadcaster.cpp
 )

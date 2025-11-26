@@ -4,6 +4,18 @@
     "enable_metrics": true,
     "metrics_interval": 30.0
   },
+  "person_tracking": {
+    "enabled": true,
+    "presence_timeout_seconds": 300.0,
+    "same_camera_cooldown_seconds": 10.0,
+    "max_detections_per_person": 100,
+    "enable_cross_camera_tracking": true,
+    "enable_persistence": true,
+    "persistence_path": "./person_tracking.json",
+    "enable_daily_reset": true,
+    "daily_reset_hour": 0,
+    "archive_path": "./tracking_archives"
+  },
   "cameras": [
     {
       "camera_id": "front_door",

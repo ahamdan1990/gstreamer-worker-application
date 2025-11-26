@@ -14,13 +14,15 @@ PipelineManager::PipelineManager(
     StateCallback on_state_changed,
     ErrorCallback on_error,
     MotionEventCallback on_motion,
-    FaceEventCallback on_face
+    FaceEventCallback on_face,
+    PersonTracker* person_tracker
 )
     : config_(config)
     , on_state_changed_(std::move(on_state_changed))
     , on_error_(std::move(on_error))
     , on_motion_(std::move(on_motion))
     , on_face_(std::move(on_face))
+    , person_tracker_(person_tracker)
     , running_(false)
 {
     if (!config_.validate()) {
@@ -70,8 +72,9 @@ bool PipelineManager::add_camera(const CameraConfig& config) {
             [this](const std::string& camera_id, const std::string& error) {
                 handle_error(camera_id, error);
             },
-            on_motion_,  // Pass motion callback directly
-            on_face_     // Pass face callback directly
+            on_motion_,      // Pass motion callback directly
+            on_face_,        // Pass face callback directly
+            person_tracker_  // Pass person tracker for enterprise tracking
         );
 
         streams_[config.camera_id] = std::move(stream);

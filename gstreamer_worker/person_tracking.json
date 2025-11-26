@@ -1,0 +1,27 @@
+{
+  "persons": [
+    {
+      "avg_similarity": 0.9780800342559814,
+      "camera_appearances": {
+        "front_door": {
+          "avg_confidence": 0.9780800342559814,
+          "camera_id": "front_door",
+          "detection_count": 3,
+          "dwell_time_seconds": 64.175262852,
+          "first_seen": 1764168044,
+          "last_seen": 1764168108
+        }
+      },
+      "first_seen_global": 1764168044,
+      "last_seen_global": 1764168108,
+      "last_similarity": 0.9956700205802917,
+      "subject": "ashamdan1990@gmail.com",
+      "total_detections": 3,
+      "total_dwell_time_seconds": 64.175262852
+    }
+  ],
+  "timestamp": 1764168177,
+  "total_events": 3,
+  "total_persons_tracked": 1,
+  "version": "1.0"
+}

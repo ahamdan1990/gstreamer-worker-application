@@ -1,6 +1,7 @@
 #include "pipeline_manager.h"
 #include "config_loader.h"
 #include "logger.h"
+#include "person_tracker.h"
 
 #include <iostream>
 #include <csignal>
@@ -13,6 +14,14 @@ using namespace gstreamer_worker;
 
 // Global flag for graceful shutdown
 static std::atomic<bool> g_shutdown_requested(false);
+
+// Global person tracker (shared across all cameras for enterprise tracking)
+static std::unique_ptr<PersonTracker> g_person_tracker;
+
+// Accessor function for person tracker (allows FaceDetector to access it)
+PersonTracker* get_person_tracker() {
+    return g_person_tracker.get();
+}
 
 // Signal handler for Ctrl+C
 void signal_handler(int signal) {
@@ -78,6 +87,42 @@ void on_face_detected(const FaceEvent& event) {
     ss << "╚══════════════════════════════════════════════╝\n";
 
     LOG_INFO("FaceEvent", ss.str());
+}
+
+// Person recognition event callback
+void on_person_recognized(const PersonRecognitionEvent& event) {
+    std::stringstream ss;
+    ss << "\n╔══════════════════════════════════════════════╗\n";
+    ss << "║      👤 PERSON RECOGNIZED                    ║\n";
+    ss << "╠══════════════════════════════════════════════╣\n";
+    ss << "║ Subject: " << std::left << std::setw(35) << event.subject << "║\n";
+    ss << "║ Camera: " << std::setw(36) << event.camera_id << "║\n";
+    ss << "║ Similarity: " << std::setw(32) << std::fixed << std::setprecision(1) << (event.similarity * 100.0) << "%" << "║\n";
+    ss << "║ Confidence: " << std::setw(32) << std::fixed << std::setprecision(1) << (event.detection_confidence * 100.0) << "%" << "║\n";
+    ss << "║ Dwell Time: " << std::setw(31) << std::fixed << std::setprecision(1) << event.dwell_time_seconds << "s" << "║\n";
+
+    if (event.is_new_person) {
+        ss << "║ Status: NEW PERSON                           ║\n";
+    } else if (event.is_new_at_camera) {
+        ss << "║ Status: NEW AT CAMERA                        ║\n";
+    }
+
+    if (!event.other_cameras.empty()) {
+        ss << "║ Also seen at: ";
+        std::string cameras_str;
+        for (size_t i = 0; i < event.other_cameras.size() && i < 2; i++) {
+            if (i > 0) cameras_str += ", ";
+            cameras_str += event.other_cameras[i];
+        }
+        if (event.other_cameras.size() > 2) {
+            cameras_str += "...";
+        }
+        ss << std::left << std::setw(28) << cameras_str << "║\n";
+    }
+
+    ss << "╚══════════════════════════════════════════════╝\n";
+
+    LOG_INFO("PersonEvent", ss.str());
 }
 
 void print_usage(const char* program_name) {
@@ -181,13 +226,14 @@ int main(int argc, char* argv[]) {
     try {
         PipelineManagerConfig manager_config;
         std::vector<CameraConfig> cameras;
+        PersonTrackerConfig person_tracking_config;
 
         // Load from config file or create single camera
         if (use_config_file) {
             // Load from JSON config
             std::cout << "Loading configuration from: " << config_file << std::endl;
 
-            if (!ConfigLoader::load_from_file(config_file, manager_config, cameras)) {
+            if (!ConfigLoader::load_from_file(config_file, manager_config, cameras, person_tracking_config)) {
                 std::cerr << "Error: Failed to load configuration file" << std::endl;
                 return 1;
             }
@@ -249,8 +295,29 @@ int main(int argc, char* argv[]) {
         std::cout << "========================================\n";
         std::cout << "\nPress Ctrl+C to stop\n" << std::endl;
 
+        // Create enterprise person tracker
+        if (person_tracking_config.enable_persistence || person_tracking_config.enable_cross_camera_tracking) {
+            std::cout << "\n========================================\n";
+            std::cout << "  Initializing Person Tracker\n";
+            std::cout << "========================================\n";
+
+            g_person_tracker = std::make_unique<PersonTracker>(
+                person_tracking_config,
+                on_person_recognized
+            );
+
+            std::cout << "========================================\n" << std::endl;
+        }
+
         // Create pipeline manager
-        PipelineManager manager(manager_config, on_state_changed, on_error, on_motion_detected, on_face_detected);
+        PipelineManager manager(
+            manager_config,
+            on_state_changed,
+            on_error,
+            on_motion_detected,
+            on_face_detected,
+            g_person_tracker.get()  // Pass person tracker for enterprise tracking
+        );
 
         // Add all cameras
         auto add_results = manager.add_cameras(cameras);

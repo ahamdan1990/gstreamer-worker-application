@@ -13,11 +13,13 @@ namespace gstreamer_worker {
 FaceDetector::FaceDetector(
     const std::string& camera_id,
     const FaceDetectionConfig& config,
-    FaceCallback on_face
+    FaceCallback on_face,
+    PersonTracker* person_tracker
 )
     : camera_id_(camera_id)
     , config_(config)
     , on_face_(on_face)
+    , person_tracker_(person_tracker)
     , memory_info_(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU))
     , frame_counter_(0)
     , initialized_(false)
@@ -1168,6 +1170,18 @@ void FaceDetector::on_recognition_result(
                       << ", match=" << (recognition.is_match ? "YES" : "NO")
                       << " (after " << tracked.recognition_attempts << " attempts)"
                       << std::endl;
+
+            // Update PersonTracker with recognition result
+            if (person_tracker_ && recognition.is_match) {
+                // Create FaceDetection from tracked face data
+                FaceDetection detection;
+                detection.bbox = tracked.bbox;
+                detection.confidence = tracked.recognition_confidence;
+                // Note: landmarks not available here, but not needed for PersonTracker
+
+                // Update person tracking
+                person_tracker_->update_person(camera_id_, recognition, detection);
+            }
 
             // Only update the first unrecognized face
             break;

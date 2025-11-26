@@ -19,7 +19,8 @@ CameraStream::CameraStream(
     StateCallback on_state_changed,
     ErrorCallback on_error,
     MotionEventCallback on_motion,
-    FaceEventCallback on_face
+    FaceEventCallback on_face,
+    PersonTracker* person_tracker
 )
     : config_(config)
     , log_tag_("CameraStream." + config.camera_id)
@@ -79,7 +80,8 @@ CameraStream::CameraStream(
                     if (on_face_) {
                         on_face_(event);
                     }
-                }
+                },
+                person_tracker  // Pass PersonTracker for enterprise tracking
             );
             face_detection_enabled_ = true;
             LOG_INFO(log_tag_, "Face detection initialized");

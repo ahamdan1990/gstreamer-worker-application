@@ -27,7 +27,8 @@ static MotionAlgorithm string_to_motion_algorithm(const std::string& str) {
 bool ConfigLoader::load_from_file(
     const std::string& file_path,
     PipelineManagerConfig& manager_config,
-    std::vector<CameraConfig>& cameras
+    std::vector<CameraConfig>& cameras,
+    PersonTrackerConfig& person_tracking_config
 ) {
     try {
         // Read file
@@ -41,7 +42,7 @@ bool ConfigLoader::load_from_file(
         json j;
         file >> j;
 
-        return load_from_string(j.dump(), manager_config, cameras);
+        return load_from_string(j.dump(), manager_config, cameras, person_tracking_config);
 
     } catch (const json::exception& e) {
         LOG_ERROR("ConfigLoader", std::string("JSON parsing error: ") + e.what());
@@ -150,7 +151,8 @@ bool ConfigLoader::save_to_file(
 bool ConfigLoader::load_from_string(
     const std::string& json_str,
     PipelineManagerConfig& manager_config,
-    std::vector<CameraConfig>& cameras
+    std::vector<CameraConfig>& cameras,
+    PersonTrackerConfig& person_tracking_config
 ) {
     try {
         json j = json::parse(json_str);
@@ -167,6 +169,51 @@ bool ConfigLoader::load_from_string(
             }
             if (mgr.contains("metrics_interval")) {
                 manager_config.metrics_interval = mgr["metrics_interval"].get<double>();
+            }
+        }
+
+        // Parse person tracking config
+        if (j.contains("person_tracking")) {
+            const auto& pt = j["person_tracking"];
+
+            if (pt.contains("enabled") && !pt["enabled"].get<bool>()) {
+                // Person tracking disabled, use defaults
+                person_tracking_config = PersonTrackerConfig();
+            } else {
+                // Parse person tracking settings
+                if (pt.contains("presence_timeout_seconds")) {
+                    person_tracking_config.presence_timeout_seconds = pt["presence_timeout_seconds"].get<double>();
+                }
+                if (pt.contains("same_camera_cooldown_seconds")) {
+                    person_tracking_config.same_camera_cooldown_seconds = pt["same_camera_cooldown_seconds"].get<double>();
+                }
+                if (pt.contains("max_detections_per_person")) {
+                    person_tracking_config.max_detections_per_person = pt["max_detections_per_person"].get<int>();
+                }
+                if (pt.contains("enable_cross_camera_tracking")) {
+                    person_tracking_config.enable_cross_camera_tracking = pt["enable_cross_camera_tracking"].get<bool>();
+                }
+                if (pt.contains("enable_persistence")) {
+                    person_tracking_config.enable_persistence = pt["enable_persistence"].get<bool>();
+                }
+                if (pt.contains("persistence_path")) {
+                    person_tracking_config.persistence_path = pt["persistence_path"].get<std::string>();
+                }
+                if (pt.contains("enable_daily_reset")) {
+                    person_tracking_config.enable_daily_reset = pt["enable_daily_reset"].get<bool>();
+                }
+                if (pt.contains("daily_reset_hour")) {
+                    person_tracking_config.daily_reset_hour = pt["daily_reset_hour"].get<int>();
+                }
+                if (pt.contains("archive_path")) {
+                    person_tracking_config.archive_path = pt["archive_path"].get<std::string>();
+                }
+
+                // Validate person tracking config
+                if (!person_tracking_config.validate()) {
+                    LOG_ERROR("ConfigLoader", "Invalid person tracking configuration");
+                    person_tracking_config = PersonTrackerConfig();  // Reset to defaults
+                }
             }
         }
 
@@ -486,8 +533,9 @@ bool ConfigLoader::validate_config_file(const std::string& file_path) {
     try {
         PipelineManagerConfig manager_config;
         std::vector<CameraConfig> cameras;
+        PersonTrackerConfig person_tracking_config;
 
-        return load_from_file(file_path, manager_config, cameras);
+        return load_from_file(file_path, manager_config, cameras, person_tracking_config);
 
     } catch (const std::exception& e) {
         LOG_ERROR("ConfigLoader", std::string("Validation error: ") + e.what());

@@ -38,13 +38,15 @@ public:
      * @param on_error Global callback for errors
      * @param on_motion Global callback for motion events
      * @param on_face Global callback for face detection events
+     * @param person_tracker Optional person tracker for enterprise tracking
      */
     PipelineManager(
         const PipelineManagerConfig& config = PipelineManagerConfig(),
         StateCallback on_state_changed = nullptr,
         ErrorCallback on_error = nullptr,
         MotionEventCallback on_motion = nullptr,
-        FaceEventCallback on_face = nullptr
+        FaceEventCallback on_face = nullptr,
+        PersonTracker* person_tracker = nullptr
     );
 
     /**
@@ -156,6 +158,9 @@ private:
     ErrorCallback on_error_;
     MotionEventCallback on_motion_;
     FaceEventCallback on_face_;
+
+    // Person tracker for enterprise tracking (not owned)
+    PersonTracker* person_tracker_;
 
     // Event broadcaster for WebSocket events
     std::shared_ptr<EventBroadcaster> event_broadcaster_;

@@ -11,6 +11,9 @@
 #include <chrono>
 #include <mutex>
 #include <functional>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
 
 namespace gstreamer_worker {
 
@@ -97,10 +100,16 @@ struct PersonTrackerConfig {
     bool enable_persistence = false;          // Save to database/file
     std::string persistence_path = "./person_tracking.json";  // Where to save data
 
+    // 24-hour daily reset mechanism
+    bool enable_daily_reset = false;          // Enable automatic daily reset
+    int daily_reset_hour = 0;                 // Hour to reset (0-23, typically 0 for midnight)
+    std::string archive_path = "./tracking_archives";  // Where to archive old data
+
     bool validate() const {
         return presence_timeout_seconds > 0.0 &&
                same_camera_cooldown_seconds >= 0.0 &&
-               max_detections_per_person > 0;
+               max_detections_per_person > 0 &&
+               daily_reset_hour >= 0 && daily_reset_hour < 24;
     }
 };
 
@@ -221,6 +230,12 @@ public:
      */
     void update_config(const PersonTrackerConfig& config);
 
+    /**
+     * @brief Perform daily reset (archive data and clear)
+     * @return true if reset successful
+     */
+    bool perform_daily_reset();
+
 private:
     PersonTrackerConfig config_;
     PersonRecognitionCallback callback_;
@@ -230,6 +245,12 @@ private:
     std::map<std::string, std::chrono::system_clock::time_point> last_alert_time_;  // subject+camera -> time
 
     Statistics stats_;
+
+    // Daily reset mechanism
+    std::atomic<bool> running_;
+    std::thread daily_reset_thread_;
+    std::condition_variable reset_cv_;
+    std::chrono::system_clock::time_point last_reset_time_;
 
     /**
      * @brief Check if person should trigger an event at camera
@@ -243,6 +264,16 @@ private:
      * @brief Cleanup stale person data
      */
     void cleanup_stale_data();
+
+    /**
+     * @brief Daily reset thread function
+     */
+    void daily_reset_worker();
+
+    /**
+     * @brief Check if it's time for daily reset
+     */
+    bool should_perform_reset() const;
 };
 
 } // namespace gstreamer_worker
