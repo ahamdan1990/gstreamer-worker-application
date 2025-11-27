@@ -144,8 +144,9 @@ export default function EditCameraPage() {
         }
       }
 
-      // Save main camera configuration
-      await apiClient.updateCamera(cameraId, formData);
+      // Save main camera configuration (exclude face_detection as it's saved separately)
+      const { face_detection, ...cameraData } = formData;
+      await apiClient.updateCamera(cameraId, cameraData);
 
       // Save face detection configuration separately if present
       if (formData.face_detection) {
@@ -647,21 +648,6 @@ export default function EditCameraPage() {
                     <h4 className="font-semibold mb-3">Model Configuration</h4>
                     <div className="space-y-4">
                       <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="fd_model_path">Model Path</Label>
-                          <Input
-                            id="fd_model_path"
-                            value={formData.face_detection?.model_path ?? ''}
-                            onChange={(e) => setFormData({
-                              ...formData,
-                              face_detection: {
-                                ...(formData.face_detection || {}),
-                                model_path: e.target.value
-                              }
-                            })}
-                          />
-                        </div>
-
                         <div className="space-y-2">
                           <Label htmlFor="fd_input_size">Input Size (px)</Label>
                           <Input

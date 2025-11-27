@@ -18,7 +18,8 @@ import {
   Camera as CameraIcon,
   Bell,
   BellOff,
-  Users
+  Users,
+  RefreshCcw
 } from 'lucide-react';
 import { Header } from '@/components/header';
 import apiClient from '@/lib/api';
@@ -31,6 +32,7 @@ export default function ProfilesPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterActive, setFilterActive] = useState<boolean | undefined>(undefined);
   const [wsConnected, setWsConnected] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     loadProfiles();
@@ -106,6 +108,34 @@ export default function ProfilesPage() {
     }
   };
 
+  const handleSyncCompreface = async () => {
+    if (!confirm('This will sync all subjects from CompreFace and create profiles for any that don\'t exist yet. Continue?')) {
+      return;
+    }
+
+    setSyncing(true);
+    try {
+      const result = await apiClient.syncComprefaceSubjects();
+
+      let message = `Sync complete!\n\n`;
+      message += `✓ Created ${result.synced} new profiles\n`;
+      message += `• ${result.existing} subjects already had profiles\n`;
+
+      if (result.failed > 0) {
+        message += `✗ ${result.failed} subjects failed to sync\n`;
+      }
+
+      alert(message);
+      loadProfiles();
+    } catch (error: any) {
+      console.error('Failed to sync CompreFace subjects:', error);
+      const errorMsg = error.response?.data?.detail || error.message || 'Unknown error';
+      alert(`Failed to sync CompreFace subjects: ${errorMsg}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const formatDate = (dateStr?: string) => {
     if (!dateStr) return 'Never';
     const date = new Date(dateStr);
@@ -150,6 +180,14 @@ export default function ProfilesPage() {
             <Badge variant={wsConnected ? 'default' : 'destructive'}>
               {wsConnected ? 'Live' : 'Disconnected'}
             </Badge>
+            <Button
+              variant="outline"
+              onClick={handleSyncCompreface}
+              disabled={syncing}
+            >
+              <RefreshCcw className={`w-4 h-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? 'Syncing...' : 'Sync CompreFace'}
+            </Button>
             <Link href="/profiles/add">
               <Button>
                 <Plus className="w-4 h-4 mr-2" />

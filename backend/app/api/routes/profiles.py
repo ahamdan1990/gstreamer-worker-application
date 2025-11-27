@@ -9,6 +9,7 @@ from sqlalchemy import select, func, and_
 from sqlalchemy.orm import joinedload
 from uuid import UUID
 from datetime import datetime
+import httpx
 
 from app.db.base import get_db
 from app.models.profile import Profile
@@ -379,3 +380,108 @@ async def get_profile_by_subject(
         "total_detections": profile.total_detections,
         "last_seen_at": profile.last_seen_at.isoformat() if profile.last_seen_at else None
     }
+
+
+@router.post("/sync-compreface", response_model=dict)
+async def sync_compreface_subjects(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Sync subjects from CompreFace to profiles
+
+    Fetches all subjects from CompreFace and creates profiles for any that don't exist yet.
+    Returns a summary of synced, existing, and failed subjects.
+    """
+    try:
+        # Fetch all subjects from CompreFace
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.COMPREFACE_URL}/api/v1/recognition/subjects",
+                headers={"x-api-key": settings.COMPREFACE_API_KEY},
+                timeout=30.0
+            )
+            response.raise_for_status()
+            data = response.json()
+            compreface_subjects = data.get("subjects", [])
+
+        if not compreface_subjects:
+            return {
+                "message": "No subjects found in CompreFace",
+                "synced": 0,
+                "existing": 0,
+                "failed": 0,
+                "subjects": []
+            }
+
+        synced = []
+        existing = []
+        failed = []
+
+        for subject_id in compreface_subjects:
+            try:
+                # Check if profile already exists
+                result = await db.execute(
+                    select(Profile).where(Profile.compreface_subject_id == subject_id)
+                )
+                profile = result.scalar_one_or_none()
+
+                if profile:
+                    existing.append(subject_id)
+                    logger.info(f"Profile already exists for subject: {subject_id}")
+                else:
+                    # Create new profile
+                    new_profile = Profile(
+                        name=subject_id,  # Use subject_id as default name
+                        compreface_subject_id=subject_id,
+                        auto_created=True,
+                        is_active=True,
+                        alert_on_recognition=False
+                    )
+                    db.add(new_profile)
+                    await db.commit()
+                    await db.refresh(new_profile)
+
+                    synced.append({
+                        "subject_id": subject_id,
+                        "profile_id": str(new_profile.id),
+                        "name": new_profile.name
+                    })
+                    logger.info(f"Created profile for subject: {subject_id}")
+
+            except Exception as e:
+                failed.append({
+                    "subject_id": subject_id,
+                    "error": str(e)
+                })
+                logger.error(f"Failed to sync subject {subject_id}: {str(e)}")
+
+        return {
+            "message": f"Synced {len(synced)} new profiles from CompreFace",
+            "synced": len(synced),
+            "existing": len(existing),
+            "failed": len(failed),
+            "subjects": {
+                "synced": synced,
+                "existing": existing,
+                "failed": failed
+            }
+        }
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"CompreFace API error: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to CompreFace: {e.response.status_code}"
+        )
+    except httpx.RequestError as e:
+        logger.error(f"CompreFace connection error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"CompreFace service unavailable: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error during CompreFace sync: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to sync CompreFace subjects: {str(e)}"
+        )

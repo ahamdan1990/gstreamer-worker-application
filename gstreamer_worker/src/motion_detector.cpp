@@ -614,7 +614,10 @@ bool MotionDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
 
     // Frame skip optimization
     if ((frame_counter_++ % config_.frame_skip) != 0) {
-        stats_.frames_skipped++;
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.frames_skipped++;
+        }
         return false;
     }
 
@@ -659,14 +662,25 @@ bool MotionDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
             d_fg_mask_.upload(fg_mask);
         }
 
-        // Blur if configured (GPU)
+        // Blur (on GPU, with cached filter)
         if (config_.blur_size > 0) {
-            cv::Ptr<cv::cuda::Filter> gaussian = cv::cuda::createGaussianFilter(
-                d_fg_mask_.type(), d_fg_mask_.type(),
-                cv::Size(config_.blur_size, config_.blur_size), 0);
-            gaussian->apply(d_fg_mask_, d_blurred_);
-            d_fg_mask_ = d_blurred_;
+            if (!gaussian_filter_ ||
+                gaussian_filter_kernel_size_ != config_.blur_size) {
+
+                gaussian_filter_ = cv::cuda::createGaussianFilter(
+                    d_gray_.type(),
+                    d_gray_.type(),
+                    cv::Size(config_.blur_size, config_.blur_size),
+                    0
+                );
+                gaussian_filter_kernel_size_ = config_.blur_size;
+            }
+
+            gaussian_filter_->apply(d_gray_, d_blurred_);
+        } else {
+            d_blurred_ = d_gray_;
         }
+
 
         // ===================================================================
         // DOWNLOAD ONLY THE TINY MASK (~640x480 = 300KB) FOR CONTOUR ANALYSIS
@@ -707,7 +721,11 @@ bool MotionDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
                 on_motion_(event);
             }
 
-            stats_.motion_events++;
+            {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                stats_.motion_events++;
+            }
+
         }
 
         // Update performance statistics

@@ -136,6 +136,10 @@ private:
     cv::cuda::GpuMat d_fg_mask_;
     cv::cuda::GpuMat d_blurred_;
 
+    // Cached CUDA Gaussian filter (avoid per-frame recreation)
+    cv::Ptr<cv::cuda::Filter> gaussian_filter_;
+    int gaussian_filter_kernel_size_ = 0;
+
     // Frame differencing (for FRAME_DIFF algorithm)
     cv::Mat prev_frame_;
     cv::cuda::GpuMat d_prev_frame_;
