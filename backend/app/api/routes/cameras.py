@@ -3,7 +3,7 @@ Camera Management API Routes
 Manages cameras in database and controls them via Worker API
 """
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from uuid import UUID
@@ -500,3 +500,145 @@ async def get_camera_status(
             last_seen_at=camera.last_seen_at,
             metrics=None
         )
+
+
+# Face Detection Configuration Endpoints
+
+@router.get("/{camera_id}/face-detection", response_model=dict)
+async def get_face_detection_config(
+    camera_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get face detection configuration for a camera"""
+    result = await db.execute(
+        select(Camera).where(Camera.camera_id == camera_id)
+    )
+    camera = result.scalar_one_or_none()
+
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Camera '{camera_id}' not found"
+        )
+
+    return {
+        "camera_id": camera_id,
+        "enabled": camera.face_detection_enabled or False,
+        "config": camera.face_detection_config or {}
+    }
+
+
+@router.put("/{camera_id}/face-detection", response_model=dict)
+async def update_face_detection_config(
+    camera_id: str,
+    enabled: bool = Form(...),
+    config: str = Form(...),  # JSON string
+    db: AsyncSession = Depends(get_db)
+):
+    """Update face detection configuration for a camera"""
+    import json
+
+    result = await db.execute(
+        select(Camera).where(Camera.camera_id == camera_id)
+    )
+    camera = result.scalar_one_or_none()
+
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Camera '{camera_id}' not found"
+        )
+
+    # Parse config JSON
+    try:
+        config_dict = json.loads(config)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid JSON for config"
+        )
+
+    # Update camera
+    camera.face_detection_enabled = enabled
+    camera.face_detection_config = config_dict
+
+    await db.commit()
+    await db.refresh(camera)
+
+    # TODO: Notify worker to reload configuration
+
+    return {
+        "camera_id": camera_id,
+        "enabled": camera.face_detection_enabled,
+        "config": camera.face_detection_config,
+        "message": "Face detection configuration updated successfully"
+    }
+
+
+@router.post("/{camera_id}/face-detection/reset", response_model=dict)
+async def reset_face_detection_config(
+    camera_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Reset face detection configuration to defaults"""
+    result = await db.execute(
+        select(Camera).where(Camera.camera_id == camera_id)
+    )
+    camera = result.scalar_one_or_none()
+
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Camera '{camera_id}' not found"
+        )
+
+    # Default face detection configuration (from cameras.json)
+    default_config = {
+        "model_path": "models/scrfd/scrfd_10g_bnkps.onnx",
+        "input_size": 640,
+        "confidence_threshold": 0.3,
+        "nms_threshold": 0.5,
+        "frame_skip": 2,
+        "max_frame_width": 1920,
+        "max_frame_height": 1080,
+        "min_face_size": 0.0003,
+        "max_faces": 30,
+        "required_frames": 1,
+        "cooldown_seconds": 0.3,
+        "use_tensorrt": True,
+        "use_cuda": True,
+        "max_batch_size": 4,
+        "save_faces": True,
+        "save_path": "./face_crops",
+        "save_margin": 0.3,
+        "min_save_confidence": 0.2,
+        "max_saves_per_event": 5,
+        "enable_blur_detection": True,
+        "min_laplacian_variance": 250.0,
+        "blur_kernel_size": 3,
+        "motion_triggered_detection": True,
+        "motion_detection_cooldown": 1.5,
+        "enable_compreface": True,
+        "compreface_url": "http://localhost:8000",
+        "compreface_api_key": "318c40d0-2142-40b9-b8ec-59d12acc157d",
+        "compreface_subject": "unknown",
+        "compreface_timeout_ms": 8000,
+        "compreface_max_queue_size": 200,
+        "enable_visualization": True,
+        "draw_landmarks": True,
+        "draw_confidence": True,
+        "box_thickness": 2,
+        "font_scale": 0.5
+    }
+
+    camera.face_detection_config = default_config
+    camera.face_detection_enabled = True
+
+    await db.commit()
+    await db.refresh(camera)
+
+    return {
+        "camera_id": camera_id,
+        "config": camera.face_detection_config,
+        "message": "Face detection configuration reset to defaults"
+    }

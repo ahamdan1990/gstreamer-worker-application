@@ -1,0 +1,381 @@
+"""
+Profile Management API Routes
+Manages person profiles with face recognition integration
+"""
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, and_
+from sqlalchemy.orm import joinedload
+from uuid import UUID
+from datetime import datetime
+
+from app.db.base import get_db
+from app.models.profile import Profile
+from app.models.person_event import PersonEvent
+from app.core.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+@router.get("/", response_model=List[dict])
+async def list_profiles(
+    skip: int = 0,
+    limit: int = 100,
+    is_active: Optional[bool] = None,
+    search: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List all profiles with optional filtering
+    
+    - **skip**: Number of records to skip (pagination)
+    - **limit**: Maximum number of records to return
+    - **is_active**: Filter by active status
+    - **search**: Search by name or compreface_subject_id
+    """
+    query = select(Profile)
+    
+    # Apply filters
+    if is_active is not None:
+        query = query.where(Profile.is_active == is_active)
+    
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.where(
+            (Profile.name.ilike(search_pattern)) |
+            (Profile.compreface_subject_id.ilike(search_pattern))
+        )
+    
+    # Apply pagination
+    query = query.offset(skip).limit(limit).order_by(Profile.created_at.desc())
+    
+    result = await db.execute(query)
+    profiles = result.scalars().all()
+    
+    return [
+        {
+            "id": str(profile.id),
+            "name": profile.name,
+            "compreface_subject_id": profile.compreface_subject_id,
+            "description": profile.description,
+            "email": profile.email,
+            "phone": profile.phone,
+            "images": profile.images or [],
+            "is_active": profile.is_active,
+            "auto_created": profile.auto_created,
+            "alert_on_recognition": profile.alert_on_recognition,
+            "total_detections": profile.total_detections,
+            "last_seen_at": profile.last_seen_at.isoformat() if profile.last_seen_at else None,
+            "last_seen_camera_id": profile.last_seen_camera_id,
+            "avg_recognition_similarity": profile.avg_recognition_similarity,
+            "tags": profile.tags or [],
+            "created_at": profile.created_at.isoformat(),
+            "updated_at": profile.updated_at.isoformat()
+        }
+        for profile in profiles
+    ]
+
+
+@router.get("/{profile_id}", response_model=dict)
+async def get_profile(
+    profile_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get profile by ID with statistics"""
+    result = await db.execute(
+        select(Profile)
+        .options(joinedload(Profile.watchlists))
+        .where(Profile.id == profile_id)
+    )
+    profile = result.scalar_one_or_none()
+    
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile with ID {profile_id} not found"
+        )
+    
+    # Get event statistics
+    event_count_result = await db.execute(
+        select(func.count(PersonEvent.id))
+        .where(PersonEvent.profile_id == profile_id)
+    )
+    event_count = event_count_result.scalar() or 0
+    
+    # Get recent events
+    recent_events_result = await db.execute(
+        select(PersonEvent)
+        .where(PersonEvent.profile_id == profile_id)
+        .order_by(PersonEvent.created_at.desc())
+        .limit(10)
+    )
+    recent_events = recent_events_result.scalars().all()
+    
+    return {
+        "id": str(profile.id),
+        "name": profile.name,
+        "compreface_subject_id": profile.compreface_subject_id,
+        "description": profile.description,
+        "email": profile.email,
+        "phone": profile.phone,
+        "images": profile.images or [],
+        "is_active": profile.is_active,
+        "auto_created": profile.auto_created,
+        "alert_on_recognition": profile.alert_on_recognition,
+        "total_detections": profile.total_detections,
+        "last_seen_at": profile.last_seen_at.isoformat() if profile.last_seen_at else None,
+        "last_seen_camera_id": profile.last_seen_camera_id,
+        "avg_recognition_similarity": profile.avg_recognition_similarity,
+        "tags": profile.tags or [],
+        "extra_metadata": profile.extra_metadata,
+        "created_at": profile.created_at.isoformat(),
+        "updated_at": profile.updated_at.isoformat(),
+        "watchlists": [
+            {
+                "id": str(wl.id),
+                "name": wl.name,
+                "color": wl.color
+            }
+            for wl in profile.watchlists
+        ],
+        "event_count": event_count,
+        "recent_events": [
+            {
+                "id": str(event.id),
+                "camera_id": event.camera_id,
+                "similarity": event.similarity,
+                "created_at": event.created_at.isoformat()
+            }
+            for event in recent_events
+        ]
+    }
+
+
+@router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
+async def create_profile(
+    name: str,
+    compreface_subject_id: str,
+    description: Optional[str] = None,
+    email: Optional[str] = None,
+    phone: Optional[str] = None,
+    alert_on_recognition: bool = False,
+    tags: Optional[List[str]] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create a new profile
+    
+    - **name**: Person's name (required)
+    - **compreface_subject_id**: CompreFace subject ID (required, unique)
+    - **description**: Optional description
+    - **email**: Optional email address
+    - **phone**: Optional phone number
+    - **alert_on_recognition**: Enable alerts when recognized
+    - **tags**: Optional tags for categorization
+    """
+    # Check if compreface_subject_id already exists
+    result = await db.execute(
+        select(Profile).where(Profile.compreface_subject_id == compreface_subject_id)
+    )
+    if result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Profile with CompreFace subject ID '{compreface_subject_id}' already exists"
+        )
+    
+    # Create profile
+    profile = Profile(
+        name=name,
+        compreface_subject_id=compreface_subject_id,
+        description=description,
+        email=email,
+        phone=phone,
+        alert_on_recognition=alert_on_recognition,
+        tags=tags or [],
+        images=[],
+        auto_created=False
+    )
+    
+    db.add(profile)
+    await db.commit()
+    await db.refresh(profile)
+    
+    logger.info(f"Created profile: {profile.name} ({profile.compreface_subject_id})")
+    
+    return {
+        "id": str(profile.id),
+        "name": profile.name,
+        "compreface_subject_id": profile.compreface_subject_id,
+        "description": profile.description,
+        "email": profile.email,
+        "phone": profile.phone,
+        "is_active": profile.is_active,
+        "alert_on_recognition": profile.alert_on_recognition,
+        "tags": profile.tags,
+        "created_at": profile.created_at.isoformat()
+    }
+
+
+@router.patch("/{profile_id}", response_model=dict)
+async def update_profile(
+    profile_id: UUID,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    email: Optional[str] = None,
+    phone: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    alert_on_recognition: Optional[bool] = None,
+    tags: Optional[List[str]] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Update profile fields"""
+    result = await db.execute(
+        select(Profile).where(Profile.id == profile_id)
+    )
+    profile = result.scalar_one_or_none()
+    
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile with ID {profile_id} not found"
+        )
+    
+    # Update fields
+    if name is not None:
+        profile.name = name
+    if description is not None:
+        profile.description = description
+    if email is not None:
+        profile.email = email
+    if phone is not None:
+        profile.phone = phone
+    if is_active is not None:
+        profile.is_active = is_active
+    if alert_on_recognition is not None:
+        profile.alert_on_recognition = alert_on_recognition
+    if tags is not None:
+        profile.tags = tags
+    
+    profile.updated_at = datetime.utcnow()
+    
+    await db.commit()
+    await db.refresh(profile)
+    
+    logger.info(f"Updated profile: {profile.name}")
+    
+    return {
+        "id": str(profile.id),
+        "name": profile.name,
+        "compreface_subject_id": profile.compreface_subject_id,
+        "description": profile.description,
+        "email": profile.email,
+        "phone": profile.phone,
+        "is_active": profile.is_active,
+        "alert_on_recognition": profile.alert_on_recognition,
+        "tags": profile.tags,
+        "updated_at": profile.updated_at.isoformat()
+    }
+
+
+@router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_profile(
+    profile_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete profile (cascade deletes person_events)"""
+    result = await db.execute(
+        select(Profile).where(Profile.id == profile_id)
+    )
+    profile = result.scalar_one_or_none()
+    
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile with ID {profile_id} not found"
+        )
+    
+    logger.info(f"Deleting profile: {profile.name} ({profile.compreface_subject_id})")
+    
+    await db.delete(profile)
+    await db.commit()
+    
+    return None
+
+
+@router.get("/{profile_id}/events", response_model=List[dict])
+async def get_profile_events(
+    profile_id: UUID,
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all person recognition events for a profile"""
+    # Verify profile exists
+    profile_result = await db.execute(
+        select(Profile).where(Profile.id == profile_id)
+    )
+    if not profile_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile with ID {profile_id} not found"
+        )
+    
+    # Get events
+    result = await db.execute(
+        select(PersonEvent)
+        .where(PersonEvent.profile_id == profile_id)
+        .order_by(PersonEvent.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    events = result.scalars().all()
+    
+    return [
+        {
+            "id": str(event.id),
+            "camera_id": event.camera_id,
+            "subject": event.subject,
+            "similarity": event.similarity,
+            "detection_confidence": event.detection_confidence,
+            "is_new_person": event.is_new_person,
+            "is_new_at_camera": event.is_new_at_camera,
+            "dwell_time_seconds": event.dwell_time_seconds,
+            "image_url": event.image_url,
+            "alert_sent": event.alert_sent,
+            "acknowledged": event.acknowledged,
+            "created_at": event.created_at.isoformat()
+        }
+        for event in events
+    ]
+
+
+@router.get("/subject/{subject_id}", response_model=dict)
+async def get_profile_by_subject(
+    subject_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get profile by CompreFace subject ID"""
+    result = await db.execute(
+        select(Profile).where(Profile.compreface_subject_id == subject_id)
+    )
+    profile = result.scalar_one_or_none()
+    
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile with subject ID '{subject_id}' not found"
+        )
+    
+    return {
+        "id": str(profile.id),
+        "name": profile.name,
+        "compreface_subject_id": profile.compreface_subject_id,
+        "is_active": profile.is_active,
+        "alert_on_recognition": profile.alert_on_recognition,
+        "total_detections": profile.total_detections,
+        "last_seen_at": profile.last_seen_at.isoformat() if profile.last_seen_at else None
+    }

@@ -2,6 +2,8 @@
 #include "api_server.h"
 #include "websocket_server.h"
 #include "event_broadcaster.h"
+#include "person_tracker.h"
+#include "config_loader.h"
 #include "logger.h"
 
 #include <iostream>
@@ -16,6 +18,9 @@ using namespace gstreamer_worker;
 
 // Global flag for graceful shutdown
 static std::atomic<bool> g_shutdown_requested(false);
+
+// Global event broadcaster (needed for PersonTracker callback)
+static std::shared_ptr<EventBroadcaster> g_broadcaster;
 
 // Signal handler for Ctrl+C
 void signal_handler(int signal) {
@@ -33,6 +38,18 @@ void on_state_changed(const std::string& camera_id, StreamState state) {
 // Error callback
 void on_error(const std::string& camera_id, const std::string& error) {
     LOG_ERROR("main", "Camera " + camera_id + " error: " + error);
+}
+
+// Person recognition callback - broadcasts via EventBroadcaster
+void on_person_recognized(const PersonRecognitionEvent& event) {
+    LOG_INFO("main", "Person recognized: " + event.subject +
+             " at camera " + event.camera_id +
+             " (similarity: " + std::to_string(event.similarity * 100.0) + "%)");
+
+    // Broadcast event to WebSocket clients via EventBroadcaster
+    if (g_broadcaster) {
+        g_broadcaster->emit_person_recognized(event);
+    }
 }
 
 // Notify FastAPI that worker is ready
@@ -185,15 +202,34 @@ int main(int argc, char* argv[]) {
         manager_config.enable_metrics = true;
         manager_config.metrics_interval = 60.0;
 
+        // Create event broadcaster for real-time notifications
+        auto broadcaster = std::make_shared<EventBroadcaster>();
+        g_broadcaster = broadcaster;  // Store globally for PersonTracker callback
+
+        // Create PersonTracker with default config
+        PersonTrackerConfig person_tracking_config;
+        person_tracking_config.enable_cross_camera_tracking = true;
+        person_tracking_config.enable_persistence = true;
+        person_tracking_config.persistence_path = "./person_tracking.json";
+        person_tracking_config.enable_daily_reset = true;
+        person_tracking_config.daily_reset_hour = 0;
+        person_tracking_config.archive_path = "./tracking_archives";
+
+        LOG_INFO("main", "Creating PersonTracker for enterprise tracking");
+        auto person_tracker = std::make_unique<PersonTracker>(
+            person_tracking_config,
+            on_person_recognized
+        );
+
         // Create pipeline manager (shared ownership with API server)
         auto manager = std::make_shared<PipelineManager>(
             manager_config,
             on_state_changed,
-            on_error
+            on_error,
+            nullptr,  // motion callback
+            nullptr,  // face callback
+            person_tracker.get()  // Pass person tracker for enterprise tracking
         );
-
-        // Create event broadcaster for real-time notifications
-        auto broadcaster = std::make_shared<EventBroadcaster>();
 
         // Attach broadcaster to pipeline manager
         manager->set_event_broadcaster(broadcaster);
@@ -203,7 +239,7 @@ int main(int argc, char* argv[]) {
         // Manager starts when first camera is added via API
 
         // Create and start HTTP API server on port 8081
-        APIServer api_server(manager, host, port);
+        APIServer api_server(manager, host, port, person_tracker.get());
 
         if (!api_server.start()) {
             LOG_ERROR("main", "Failed to start HTTP API server");

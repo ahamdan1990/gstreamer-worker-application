@@ -789,8 +789,54 @@ void FaceDetector::save_face_crops(
         int frame_width = h_frame.cols;
         int frame_height = h_frame.rows;
 
-        // Calculate face box with margin
+        // CRITICAL FIX: Dynamically adjust margin to prevent including other faces
+        // When multiple faces are close together, we need to ensure each crop
+        // contains ONLY the intended face, not neighboring faces.
         float margin = config_.save_margin;
+
+        // Check if crop with current margin would overlap with any other detected faces
+        bool has_nearby_faces = false;
+        for (size_t j = 0; j < detections.size(); j++) {
+            if (i == j) continue;  // Skip current face
+
+            const auto& other_face = detections[j];
+
+            // Calculate potential crop bounds with current margin
+            float crop_x_min = detection.bbox.x - (detection.bbox.width * margin / 2.0f);
+            float crop_y_min = detection.bbox.y - (detection.bbox.height * margin / 2.0f);
+            float crop_x_max = crop_x_min + detection.bbox.width * (1.0f + margin);
+            float crop_y_max = crop_y_min + detection.bbox.height * (1.0f + margin);
+
+            // Check if other face's center is inside our crop region
+            float other_center_x = other_face.bbox.x + other_face.bbox.width / 2.0f;
+            float other_center_y = other_face.bbox.y + other_face.bbox.height / 2.0f;
+
+            if (other_center_x >= crop_x_min && other_center_x <= crop_x_max &&
+                other_center_y >= crop_y_min && other_center_y <= crop_y_max) {
+                has_nearby_faces = true;
+
+                // Calculate distance between faces
+                float dist_x = std::abs(detection.bbox.x - other_face.bbox.x);
+                float dist_y = std::abs(detection.bbox.y - other_face.bbox.y);
+                float distance = std::sqrt(dist_x * dist_x + dist_y * dist_y);
+
+                // Reduce margin proportionally to distance
+                // If faces are very close, use minimal margin (0.1)
+                // If faces are farther, can use more margin
+                float max_safe_margin = std::max(0.1f, (distance / detection.bbox.width) - 1.0f);
+                margin = std::min(margin, max_safe_margin);
+
+                std::cout << "[FaceDetector:" << camera_id_ << "] ⚠️  Face #" << (i+1)
+                          << " has nearby face #" << (j+1) << " at distance " << distance
+                          << " - reducing margin from " << config_.save_margin
+                          << " to " << margin << " to prevent overlap" << std::endl;
+            }
+        }
+
+        // Use minimum margin of 0.1 (10%) to ensure we have some context
+        margin = std::max(0.1f, margin);
+
+        // Calculate face box with adjusted margin
         float x = detection.bbox.x - (detection.bbox.width * margin / 2.0f);
         float y = detection.bbox.y - (detection.bbox.height * margin / 2.0f);
         float w = detection.bbox.width * (1.0f + margin);

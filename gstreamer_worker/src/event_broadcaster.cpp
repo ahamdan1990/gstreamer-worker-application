@@ -1,5 +1,6 @@
 #include "event_broadcaster.h"
 #include "websocket_server.h"
+#include "person_tracker.h"
 #include "logger.h"
 #include <chrono>
 #include <unistd.h>
@@ -232,6 +233,48 @@ void EventBroadcaster::emit_pipeline_recovered(
     emit_event("pipeline_recovered", data, camera_id);
     LOG_INFO(log_tag_, "Pipeline recovered event emitted: " + camera_id +
              " (recovery time: " + std::to_string(recovery_time_seconds) + "s)");
+}
+
+void EventBroadcaster::emit_person_recognized(const PersonRecognitionEvent& event) {
+    // Convert timestamp to Unix epoch
+    auto event_time = std::chrono::system_clock::to_time_t(event.timestamp);
+
+    // Build other_cameras array
+    json other_cameras = json::array();
+    for (const auto& cam : event.other_cameras) {
+        other_cameras.push_back(cam);
+    }
+
+    json data = {
+        {"subject", event.subject},
+        {"similarity", event.similarity},
+        {"detection_confidence", event.detection_confidence},
+        {"is_new_person", event.is_new_person},
+        {"is_new_at_camera", event.is_new_at_camera},
+        {"dwell_time_seconds", event.dwell_time_seconds},
+        {"other_cameras", other_cameras},
+        {"event_time", event_time}
+    };
+
+    emit_event("person_recognized", data, event.camera_id);
+    LOG_INFO(log_tag_, "Person recognized event emitted: " + event.camera_id +
+             " (subject: " + event.subject + ", similarity: " + std::to_string(event.similarity) + ")");
+}
+
+void EventBroadcaster::emit_face_detected(
+    const std::string& camera_id,
+    float confidence,
+    int detection_count
+) {
+    json data = {
+        {"confidence", confidence},
+        {"detection_count", detection_count},
+        {"subject", "unknown"}
+    };
+
+    emit_event("face_detected", data, camera_id);
+    LOG_INFO(log_tag_, "Face detected event emitted: " + camera_id +
+             " (confidence: " + std::to_string(confidence) + ")");
 }
 
 bool EventBroadcaster::is_connected() const {

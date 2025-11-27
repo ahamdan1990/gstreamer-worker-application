@@ -536,12 +536,48 @@ async def get_system_status():
 
 
 # Import and include routers
-from app.api.routes import cameras
+from app.api.routes import cameras, profiles, tracking, watchlists, webhooks, events, settings as settings_routes
 
 app.include_router(
     cameras.router,
     prefix=f"{settings.API_PREFIX}/cameras",
     tags=["cameras"]
+)
+
+app.include_router(
+    profiles.router,
+    prefix=f"{settings.API_PREFIX}/profiles",
+    tags=["profiles"]
+)
+
+app.include_router(
+    tracking.router,
+    prefix=f"{settings.API_PREFIX}/tracking",
+    tags=["tracking"]
+)
+
+app.include_router(
+    watchlists.router,
+    prefix=f"{settings.API_PREFIX}/watchlists",
+    tags=["watchlists"]
+)
+
+app.include_router(
+    webhooks.router,
+    prefix=f"{settings.API_PREFIX}/webhooks",
+    tags=["webhooks"]
+)
+
+app.include_router(
+    events.router,
+    prefix=f"{settings.API_PREFIX}/events",
+    tags=["events"]
+)
+
+app.include_router(
+    settings_routes.router,
+    prefix=f"{settings.API_PREFIX}/settings",
+    tags=["settings"]
 )
 
 if __name__ == "__main__":

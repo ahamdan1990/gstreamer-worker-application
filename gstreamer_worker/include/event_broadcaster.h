@@ -9,6 +9,7 @@
 namespace gstreamer_worker {
 
 class WebSocketServer;  // Forward declaration
+struct PersonRecognitionEvent;  // Forward declaration
 
 // Broadcast function type for WebSocket messages
 using BroadcastFunc = std::function<void(const std::string&)>;
@@ -167,6 +168,24 @@ public:
     void emit_pipeline_recovered(
         const std::string& camera_id,
         double recovery_time_seconds
+    );
+
+    /**
+     * @brief Emit person recognized event
+     * @param event Person recognition event data
+     */
+    void emit_person_recognized(const PersonRecognitionEvent& event);
+
+    /**
+     * @brief Emit face detected event (unknown person)
+     * @param camera_id Camera identifier
+     * @param confidence Detection confidence
+     * @param detection_count Number of detections
+     */
+    void emit_face_detected(
+        const std::string& camera_id,
+        float confidence,
+        int detection_count
     );
 
     /**

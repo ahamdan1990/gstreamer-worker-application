@@ -439,26 +439,64 @@ private:
                 return std::nullopt;
             }
 
-            auto& first_match = j["result"][0];
+            // CRITICAL FIX: Process ALL faces returned by CompreFace, not just result[0]
+            // When multiple people are in the same crop (due to close proximity or crop margin),
+            // CompreFace will return multiple faces in the result array.
+            auto& results_array = j["result"];
+            int num_faces_detected = results_array.size();
 
-            RecognitionResult result;
-
-            // Parse subjects array (CompreFace returns matches in subjects array)
-            if (first_match.contains("subjects") && first_match["subjects"].is_array() && !first_match["subjects"].empty()) {
-                auto& first_subject = first_match["subjects"][0];
-                result.subject = first_subject.value("subject", "unknown");
-                result.similarity = first_subject.value("similarity", 0.0f);
-            } else {
-                // No subjects found - face detected but no match
-                result.subject = "unknown";
-                result.similarity = 0.0f;
+            if (num_faces_detected > 1) {
+                std::cout << "[CompreFaceClient] ⚠️  MULTIPLE FACES detected in single crop: "
+                          << num_faces_detected << " faces" << std::endl;
+                std::cout << "[CompreFaceClient] This happens when:" << std::endl;
+                std::cout << "[CompreFaceClient]   1. Multiple people are close together" << std::endl;
+                std::cout << "[CompreFaceClient]   2. Crop margin is too large and includes neighboring faces" << std::endl;
+                std::cout << "[CompreFaceClient] ➡️  Selecting face with HIGHEST similarity score..." << std::endl;
             }
 
-            result.face_id = first_match.value("face_id", "");
-            result.confidence = result.similarity;  // Use similarity as confidence
-            result.is_match = (result.similarity >= config_.similarity_threshold);
+            // Find the face with highest similarity across ALL detected faces
+            RecognitionResult best_result;
+            float best_similarity = -1.0f;
+            int best_face_idx = -1;
 
-            return result;
+            for (int i = 0; i < num_faces_detected; i++) {
+                auto& face = results_array[i];
+
+                // Parse subjects array for this face
+                if (face.contains("subjects") && face["subjects"].is_array() && !face["subjects"].empty()) {
+                    auto& first_subject = face["subjects"][0];
+                    float similarity = first_subject.value("similarity", 0.0f);
+
+                    std::cout << "[CompreFaceClient]   Face #" << (i + 1) << ": "
+                              << first_subject.value("subject", "unknown")
+                              << " (similarity: " << similarity << ")" << std::endl;
+
+                    if (similarity > best_similarity) {
+                        best_similarity = similarity;
+                        best_face_idx = i;
+                        best_result.subject = first_subject.value("subject", "unknown");
+                        best_result.similarity = similarity;
+                        best_result.face_id = face.value("face_id", "");
+                    }
+                }
+            }
+
+            if (best_face_idx == -1) {
+                // No subjects found in any face - face detected but no match
+                std::cout << "[CompreFaceClient] ℹ️  No recognized subjects in any detected face" << std::endl;
+                return std::nullopt;
+            }
+
+            if (num_faces_detected > 1) {
+                std::cout << "[CompreFaceClient] ✅ Selected Face #" << (best_face_idx + 1)
+                          << ": " << best_result.subject
+                          << " (highest similarity: " << best_result.similarity << ")" << std::endl;
+            }
+
+            best_result.confidence = best_result.similarity;  // Use similarity as confidence
+            best_result.is_match = (best_result.similarity >= config_.similarity_threshold);
+
+            return best_result;
 
         } catch (const std::exception& e) {
             std::cerr << "[CompreFaceClient] JSON parse error: " << e.what() << std::endl;

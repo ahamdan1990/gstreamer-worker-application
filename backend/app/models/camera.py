@@ -53,6 +53,10 @@ class Camera(Base):
     motion_detection_enabled = Column(Boolean, default=False)
     motion_detection_config = Column(JSON)  # Full motion detection configuration
 
+    # Face Detection Configuration (stored as JSON)
+    face_detection_enabled = Column(Boolean, default=False)
+    face_detection_config = Column(JSON)  # Full face detection configuration (37 parameters)
+
     # Status
     enabled = Column(Boolean, default=True)
     state = Column(String(50), default="STOPPED")  # STOPPED, STARTING, RUNNING, ERROR, RECONNECTING

@@ -2,6 +2,7 @@
 #define GSTREAMER_WORKER_API_SERVER_H
 
 #include "pipeline_manager.h"
+#include "person_tracker.h"
 #include <memory>
 #include <string>
 #include <atomic>
@@ -22,11 +23,13 @@ public:
      * @param manager Pipeline manager to control
      * @param host Host to bind to (default: 0.0.0.0)
      * @param port Port to listen on (default: 8081)
+     * @param person_tracker Optional person tracker for enterprise tracking endpoints
      */
     APIServer(
         std::shared_ptr<PipelineManager> manager,
         const std::string& host = "0.0.0.0",
-        int port = 8081
+        int port = 8081,
+        PersonTracker* person_tracker = nullptr
     );
 
     /**
@@ -52,6 +55,7 @@ public:
 
 private:
     std::shared_ptr<PipelineManager> manager_;
+    PersonTracker* person_tracker_;  // Not owned, optional
     std::string host_;
     int port_;
     std::atomic<bool> running_;

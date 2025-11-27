@@ -13,15 +13,20 @@ namespace gstreamer_worker {
 APIServer::APIServer(
     std::shared_ptr<PipelineManager> manager,
     const std::string& host,
-    int port
+    int port,
+    PersonTracker* person_tracker
 )
     : manager_(manager)
+    , person_tracker_(person_tracker)
     , host_(host)
     , port_(port)
     , running_(false)
     , server_impl_(nullptr)
 {
     LOG_INFO(log_tag_, "API Server initialized on " + host + ":" + std::to_string(port));
+    if (person_tracker_) {
+        LOG_INFO(log_tag_, "PersonTracker integration enabled");
+    }
 }
 
 APIServer::~APIServer() {
@@ -368,7 +373,281 @@ void APIServer::setup_routes() {
         }
     });
 
-    LOG_INFO(log_tag_, "API routes configured");
+    // ========== PERSON TRACKING API ENDPOINTS ==========
+
+    // Helper lambda to convert PersonAppearance to JSON
+    auto appearance_to_json = [](const PersonAppearance& app) {
+        auto first_seen_time = std::chrono::system_clock::to_time_t(app.first_seen);
+        auto last_seen_time = std::chrono::system_clock::to_time_t(app.last_seen);
+
+        return json{
+            {"camera_id", app.camera_id},
+            {"first_seen", first_seen_time},
+            {"last_seen", last_seen_time},
+            {"detection_count", app.detection_count},
+            {"avg_confidence", app.avg_confidence},
+            {"dwell_time_seconds", app.dwell_time_seconds()}
+        };
+    };
+
+    // Helper lambda to convert PersonPresence to JSON
+    auto presence_to_json = [&appearance_to_json](const PersonPresence& person) {
+        auto first_seen_time = std::chrono::system_clock::to_time_t(person.first_seen_global);
+        auto last_seen_time = std::chrono::system_clock::to_time_t(person.last_seen_global);
+
+        json camera_appearances = json::object();
+        for (const auto& [camera_id, appearance] : person.camera_appearances) {
+            camera_appearances[camera_id] = appearance_to_json(appearance);
+        }
+
+        return json{
+            {"subject", person.subject},
+            {"last_similarity", person.last_similarity},
+            {"first_seen_global", first_seen_time},
+            {"last_seen_global", last_seen_time},
+            {"camera_appearances", camera_appearances},
+            {"total_detections", person.total_detections},
+            {"avg_similarity", person.avg_similarity},
+            {"total_dwell_time_seconds", person.total_dwell_time_seconds()},
+            {"cameras", person.get_camera_list()}
+        };
+    };
+
+    // GET /api/persons - List all tracked persons
+    server->Get("/api/persons", [this, presence_to_json](const httplib::Request&, httplib::Response& res) {
+        if (!person_tracker_) {
+            json error = {{"error", "Person tracking not enabled"}};
+            res.status = 503;
+            res.set_content(error.dump(), "application/json");
+            return;
+        }
+
+        try {
+            auto persons = person_tracker_->get_all_persons();
+            json persons_json = json::array();
+
+            for (const auto& person : persons) {
+                persons_json.push_back(presence_to_json(person));
+            }
+
+            json response = {
+                {"persons", persons_json},
+                {"count", persons.size()}
+            };
+
+            res.set_content(response.dump(), "application/json");
+        } catch (const std::exception& e) {
+            json error = {{"error", e.what()}};
+            res.status = 500;
+            res.set_content(error.dump(), "application/json");
+        }
+    });
+
+    // GET /api/persons/:subject - Get specific person
+    server->Get("/api/persons/:subject", [this, presence_to_json](const httplib::Request& req, httplib::Response& res) {
+        if (!person_tracker_) {
+            json error = {{"error", "Person tracking not enabled"}};
+            res.status = 503;
+            res.set_content(error.dump(), "application/json");
+            return;
+        }
+
+        try {
+            std::string subject = req.path_params.at("subject");
+            auto person_opt = person_tracker_->get_person_presence(subject);
+
+            if (!person_opt) {
+                json error = {{"error", "Person not found"}};
+                res.status = 404;
+                res.set_content(error.dump(), "application/json");
+                return;
+            }
+
+            json response = presence_to_json(*person_opt);
+            res.set_content(response.dump(), "application/json");
+        } catch (const std::exception& e) {
+            json error = {{"error", e.what()}};
+            res.status = 500;
+            res.set_content(error.dump(), "application/json");
+        }
+    });
+
+    // GET /api/persons/camera/:camera_id - Get persons at specific camera
+    server->Get("/api/persons/camera/:camera_id", [this, presence_to_json](const httplib::Request& req, httplib::Response& res) {
+        if (!person_tracker_) {
+            json error = {{"error", "Person tracking not enabled"}};
+            res.status = 503;
+            res.set_content(error.dump(), "application/json");
+            return;
+        }
+
+        try {
+            std::string camera_id = req.path_params.at("camera_id");
+
+            // Get max_age_seconds from query parameter (default: 60 seconds)
+            double max_age_seconds = 60.0;
+            if (req.has_param("max_age_seconds")) {
+                max_age_seconds = std::stod(req.get_param_value("max_age_seconds"));
+            }
+
+            auto persons = person_tracker_->get_persons_at_camera(camera_id, max_age_seconds);
+            json persons_json = json::array();
+
+            for (const auto& person : persons) {
+                persons_json.push_back(presence_to_json(person));
+            }
+
+            json response = {
+                {"camera_id", camera_id},
+                {"max_age_seconds", max_age_seconds},
+                {"persons", persons_json},
+                {"count", persons.size()}
+            };
+
+            res.set_content(response.dump(), "application/json");
+        } catch (const std::exception& e) {
+            json error = {{"error", e.what()}};
+            res.status = 500;
+            res.set_content(error.dump(), "application/json");
+        }
+    });
+
+    // GET /api/persons/cross-camera - Get persons who visited multiple cameras
+    server->Get("/api/persons/cross-camera", [this, presence_to_json](const httplib::Request&, httplib::Response& res) {
+        if (!person_tracker_) {
+            json error = {{"error", "Person tracking not enabled"}};
+            res.status = 503;
+            res.set_content(error.dump(), "application/json");
+            return;
+        }
+
+        try {
+            auto persons = person_tracker_->get_cross_camera_persons();
+            json persons_json = json::array();
+
+            for (const auto& person : persons) {
+                persons_json.push_back(presence_to_json(person));
+            }
+
+            json response = {
+                {"persons", persons_json},
+                {"count", persons.size()}
+            };
+
+            res.set_content(response.dump(), "application/json");
+        } catch (const std::exception& e) {
+            json error = {{"error", e.what()}};
+            res.status = 500;
+            res.set_content(error.dump(), "application/json");
+        }
+    });
+
+    // GET /api/tracking/stats - Get tracking statistics
+    server->Get("/api/tracking/stats", [this](const httplib::Request&, httplib::Response& res) {
+        if (!person_tracker_) {
+            json error = {{"error", "Person tracking not enabled"}};
+            res.status = 503;
+            res.set_content(error.dump(), "application/json");
+            return;
+        }
+
+        try {
+            auto stats = person_tracker_->get_statistics();
+
+            json response = {
+                {"total_persons_tracked", stats.total_persons_tracked},
+                {"currently_tracked", stats.currently_tracked},
+                {"cross_camera_persons", stats.cross_camera_persons},
+                {"total_events", stats.total_events},
+                {"avg_dwell_time_seconds", stats.avg_dwell_time_seconds}
+            };
+
+            res.set_content(response.dump(), "application/json");
+        } catch (const std::exception& e) {
+            json error = {{"error", e.what()}};
+            res.status = 500;
+            res.set_content(error.dump(), "application/json");
+        }
+    });
+
+    // POST /api/tracking/reset - Trigger daily reset
+    server->Post("/api/tracking/reset", [this](const httplib::Request&, httplib::Response& res) {
+        if (!person_tracker_) {
+            json error = {{"error", "Person tracking not enabled"}};
+            res.status = 503;
+            res.set_content(error.dump(), "application/json");
+            return;
+        }
+
+        try {
+            bool success = person_tracker_->perform_daily_reset();
+
+            json response = {
+                {"success", success},
+                {"message", success ? "Daily reset performed successfully" : "Failed to perform daily reset"}
+            };
+
+            res.set_content(response.dump(), "application/json");
+        } catch (const std::exception& e) {
+            json error = {{"error", e.what()}};
+            res.status = 500;
+            res.set_content(error.dump(), "application/json");
+        }
+    });
+
+    // DELETE /api/persons/:subject - Remove person from tracking
+    server->Delete("/api/persons/:subject", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!person_tracker_) {
+            json error = {{"error", "Person tracking not enabled"}};
+            res.status = 503;
+            res.set_content(error.dump(), "application/json");
+            return;
+        }
+
+        try {
+            std::string subject = req.path_params.at("subject");
+            person_tracker_->remove_person(subject);
+
+            json response = {
+                {"success", true},
+                {"subject", subject},
+                {"message", "Person removed from tracking"}
+            };
+
+            res.set_content(response.dump(), "application/json");
+        } catch (const std::exception& e) {
+            json error = {{"error", e.what()}};
+            res.status = 500;
+            res.set_content(error.dump(), "application/json");
+        }
+    });
+
+    // POST /api/tracking/clear - Clear all tracking data
+    server->Post("/api/tracking/clear", [this](const httplib::Request&, httplib::Response& res) {
+        if (!person_tracker_) {
+            json error = {{"error", "Person tracking not enabled"}};
+            res.status = 503;
+            res.set_content(error.dump(), "application/json");
+            return;
+        }
+
+        try {
+            person_tracker_->clear_all();
+
+            json response = {
+                {"success", true},
+                {"message", "All tracking data cleared"}
+            };
+
+            res.set_content(response.dump(), "application/json");
+        } catch (const std::exception& e) {
+            json error = {{"error", e.what()}};
+            res.status = 500;
+            res.set_content(error.dump(), "application/json");
+        }
+    });
+
+    LOG_INFO(log_tag_, "API routes configured" + std::string(person_tracker_ ? " (with PersonTracker endpoints)" : ""));
 }
 
 } // namespace gstreamer_worker

@@ -1,24 +1,537 @@
 'use client';
 
-import { Card, CardContent } from '@/components/ui/card';
-import { Settings as SettingsIcon } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  Settings as SettingsIcon,
+  Save,
+  RotateCcw,
+  Users,
+  Activity,
+  Clock,
+  Database,
+  TrendingUp,
+  AlertCircle,
+} from 'lucide-react';
 import { Header } from '@/components/header';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 
 export default function SettingsPage() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+
+  // Person Tracking Settings
+  const [personTracking, setPersonTracking] = useState({
+    enabled: true,
+    presence_timeout_seconds: 300,
+    same_camera_cooldown_seconds: 10,
+    max_detections_per_person: 100,
+    enable_cross_camera_tracking: true,
+    enable_persistence: true,
+    persistence_path: './person_tracking.json',
+    enable_daily_reset: true,
+    daily_reset_hour: 0,
+    archive_path: './tracking_archives',
+  });
+
+  // Manager Settings
+  const [manager, setManager] = useState({
+    log_level: 'INFO',
+    enable_metrics: true,
+    metrics_interval: 30,
+  });
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  const loadSettings = async () => {
+    try {
+      setLoading(true);
+      setErrorMessage('');
+
+      // Load person tracking settings
+      const ptResponse = await fetch('http://localhost:8002/api/v1/settings/person-tracking/config');
+      if (ptResponse.ok) {
+        const ptData = await ptResponse.json();
+        setPersonTracking(ptData);
+      }
+
+      // Load manager settings
+      const mgResponse = await fetch('http://localhost:8002/api/v1/settings/manager/config');
+      if (mgResponse.ok) {
+        const mgData = await mgResponse.json();
+        setManager(mgData);
+      }
+    } catch (error) {
+      console.error('Failed to load settings:', error);
+      setErrorMessage('Failed to load settings. Make sure the backend server is running.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const savePersonTrackingSettings = async () => {
+    try {
+      setSaving(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const formData = new FormData();
+      formData.append('enabled', personTracking.enabled.toString());
+      formData.append('presence_timeout_seconds', personTracking.presence_timeout_seconds.toString());
+      formData.append('same_camera_cooldown_seconds', personTracking.same_camera_cooldown_seconds.toString());
+      formData.append('max_detections_per_person', personTracking.max_detections_per_person.toString());
+      formData.append('enable_cross_camera_tracking', personTracking.enable_cross_camera_tracking.toString());
+      formData.append('enable_persistence', personTracking.enable_persistence.toString());
+      formData.append('persistence_path', personTracking.persistence_path);
+      formData.append('enable_daily_reset', personTracking.enable_daily_reset.toString());
+      formData.append('daily_reset_hour', personTracking.daily_reset_hour.toString());
+      formData.append('archive_path', personTracking.archive_path);
+
+      const response = await fetch('http://localhost:8002/api/v1/settings/person-tracking/config', {
+        method: 'PUT',
+        body: formData,
+      });
+
+      if (response.ok) {
+        setSuccessMessage('Person tracking settings saved successfully!');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        throw new Error('Failed to save settings');
+      }
+    } catch (error) {
+      console.error('Failed to save person tracking settings:', error);
+      setErrorMessage('Failed to save person tracking settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveManagerSettings = async () => {
+    try {
+      setSaving(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const formData = new FormData();
+      formData.append('log_level', manager.log_level);
+      formData.append('enable_metrics', manager.enable_metrics.toString());
+      formData.append('metrics_interval', manager.metrics_interval.toString());
+
+      const response = await fetch('http://localhost:8002/api/v1/settings/manager/config', {
+        method: 'PUT',
+        body: formData,
+      });
+
+      if (response.ok) {
+        setSuccessMessage('Manager settings saved successfully!');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        throw new Error('Failed to save settings');
+      }
+    } catch (error) {
+      console.error('Failed to save manager settings:', error);
+      setErrorMessage('Failed to save manager settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const resetPersonTracking = async () => {
+    if (!confirm('Reset person tracking settings to defaults?')) return;
+
+    try {
+      setSaving(true);
+      const response = await fetch('http://localhost:8002/api/v1/settings/person_tracking/reset', {
+        method: 'POST',
+      });
+
+      if (response.ok) {
+        await loadSettings();
+        setSuccessMessage('Person tracking settings reset to defaults!');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      }
+    } catch (error) {
+      console.error('Failed to reset settings:', error);
+      setErrorMessage('Failed to reset settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const resetManager = async () => {
+    if (!confirm('Reset manager settings to defaults?')) return;
+
+    try {
+      setSaving(true);
+      const response = await fetch('http://localhost:8002/api/v1/settings/manager/reset', {
+        method: 'POST',
+      });
+
+      if (response.ok) {
+        await loadSettings();
+        setSuccessMessage('Manager settings reset to defaults!');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      }
+    } catch (error) {
+      console.error('Failed to reset settings:', error);
+      setErrorMessage('Failed to reset settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <Header />
+        <div className="flex items-center justify-center h-96">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
-      <Header title="Settings" description="System configuration" />
-      <main className="container mx-auto px-6 py-8">
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-16">
-            <SettingsIcon className="h-16 w-16 text-muted-foreground mb-4" />
-            <h3 className="text-xl font-semibold mb-2">Settings Coming Soon</h3>
-            <p className="text-sm text-muted-foreground">
-              Configure system preferences, notifications, and integrations
-            </p>
-          </CardContent>
-        </Card>
-      </main>
+    <div className="min-h-screen bg-gray-50">
+      <Header />
+      <div className="container mx-auto py-8 px-4 max-w-7xl">
+        {/* Page Header */}
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-2">
+            <SettingsIcon className="h-8 w-8 text-blue-600" />
+            System Settings
+          </h1>
+          <p className="text-gray-500 mt-1">
+            Configure global system settings for person tracking and manager
+          </p>
+        </div>
+
+        {/* Success/Error Messages */}
+        {successMessage && (
+          <Alert className="mb-6 bg-green-50 border-green-200">
+            <AlertCircle className="h-4 w-4 text-green-600" />
+            <AlertDescription className="text-green-800">{successMessage}</AlertDescription>
+          </Alert>
+        )}
+
+        {errorMessage && (
+          <Alert className="mb-6 bg-red-50 border-red-200">
+            <AlertCircle className="h-4 w-4 text-red-600" />
+            <AlertDescription className="text-red-800">{errorMessage}</AlertDescription>
+          </Alert>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Person Tracking Settings */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Users className="h-5 w-5 text-blue-600" />
+                Person Tracking
+              </CardTitle>
+              <CardDescription>
+                Configure cross-camera person tracking and persistence
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Enable/Disable */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="pt-enabled" className="font-semibold">
+                    Enable Person Tracking
+                  </Label>
+                  <p className="text-sm text-gray-500">Track persons across cameras</p>
+                </div>
+                <Switch
+                  id="pt-enabled"
+                  checked={personTracking.enabled}
+                  onCheckedChange={(checked) =>
+                    setPersonTracking({ ...personTracking, enabled: checked })
+                  }
+                />
+              </div>
+
+              {/* Presence Timeout */}
+              <div className="space-y-2">
+                <Label htmlFor="pt-presence-timeout" className="flex items-center gap-2">
+                  <Clock className="h-4 w-4" />
+                  Presence Timeout (seconds)
+                </Label>
+                <Input
+                  id="pt-presence-timeout"
+                  type="number"
+                  value={personTracking.presence_timeout_seconds}
+                  onChange={(e) =>
+                    setPersonTracking({
+                      ...personTracking,
+                      presence_timeout_seconds: parseFloat(e.target.value),
+                    })
+                  }
+                />
+                <p className="text-xs text-gray-500">
+                  Time before person is marked as left (default: 300)
+                </p>
+              </div>
+
+              {/* Camera Cooldown */}
+              <div className="space-y-2">
+                <Label htmlFor="pt-cooldown">Same Camera Cooldown (seconds)</Label>
+                <Input
+                  id="pt-cooldown"
+                  type="number"
+                  value={personTracking.same_camera_cooldown_seconds}
+                  onChange={(e) =>
+                    setPersonTracking({
+                      ...personTracking,
+                      same_camera_cooldown_seconds: parseFloat(e.target.value),
+                    })
+                  }
+                />
+                <p className="text-xs text-gray-500">
+                  Cooldown between recognitions on same camera (default: 10)
+                </p>
+              </div>
+
+              {/* Max Detections */}
+              <div className="space-y-2">
+                <Label htmlFor="pt-max-detections">Max Detections Per Person</Label>
+                <Input
+                  id="pt-max-detections"
+                  type="number"
+                  value={personTracking.max_detections_per_person}
+                  onChange={(e) =>
+                    setPersonTracking({
+                      ...personTracking,
+                      max_detections_per_person: parseInt(e.target.value),
+                    })
+                  }
+                />
+                <p className="text-xs text-gray-500">
+                  Limit to prevent memory issues (default: 100)
+                </p>
+              </div>
+
+              {/* Cross-Camera Tracking */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="pt-cross-camera" className="font-semibold">
+                    Cross-Camera Tracking
+                  </Label>
+                  <p className="text-sm text-gray-500">Track persons across multiple cameras</p>
+                </div>
+                <Switch
+                  id="pt-cross-camera"
+                  checked={personTracking.enable_cross_camera_tracking}
+                  onCheckedChange={(checked) =>
+                    setPersonTracking({ ...personTracking, enable_cross_camera_tracking: checked })
+                  }
+                />
+              </div>
+
+              {/* Persistence */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="pt-persistence" className="font-semibold flex items-center gap-2">
+                    <Database className="h-4 w-4" />
+                    Enable Persistence
+                  </Label>
+                  <p className="text-sm text-gray-500">Save tracking state to disk</p>
+                </div>
+                <Switch
+                  id="pt-persistence"
+                  checked={personTracking.enable_persistence}
+                  onCheckedChange={(checked) =>
+                    setPersonTracking({ ...personTracking, enable_persistence: checked })
+                  }
+                />
+              </div>
+
+              {/* Persistence Path */}
+              {personTracking.enable_persistence && (
+                <div className="space-y-2">
+                  <Label htmlFor="pt-persistence-path">Persistence Path</Label>
+                  <Input
+                    id="pt-persistence-path"
+                    value={personTracking.persistence_path}
+                    onChange={(e) =>
+                      setPersonTracking({ ...personTracking, persistence_path: e.target.value })
+                    }
+                  />
+                </div>
+              )}
+
+              {/* Daily Reset */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="pt-daily-reset" className="font-semibold">
+                    Daily Reset
+                  </Label>
+                  <p className="text-sm text-gray-500">Reset tracking at midnight</p>
+                </div>
+                <Switch
+                  id="pt-daily-reset"
+                  checked={personTracking.enable_daily_reset}
+                  onCheckedChange={(checked) =>
+                    setPersonTracking({ ...personTracking, enable_daily_reset: checked })
+                  }
+                />
+              </div>
+
+              {/* Reset Hour */}
+              {personTracking.enable_daily_reset && (
+                <div className="space-y-2">
+                  <Label htmlFor="pt-reset-hour">Reset Hour (0-23)</Label>
+                  <Input
+                    id="pt-reset-hour"
+                    type="number"
+                    min="0"
+                    max="23"
+                    value={personTracking.daily_reset_hour}
+                    onChange={(e) =>
+                      setPersonTracking({
+                        ...personTracking,
+                        daily_reset_hour: parseInt(e.target.value),
+                      })
+                    }
+                  />
+                </div>
+              )}
+
+              {/* Archive Path */}
+              <div className="space-y-2">
+                <Label htmlFor="pt-archive-path">Archive Path</Label>
+                <Input
+                  id="pt-archive-path"
+                  value={personTracking.archive_path}
+                  onChange={(e) =>
+                    setPersonTracking({ ...personTracking, archive_path: e.target.value })
+                  }
+                />
+                <p className="text-xs text-gray-500">Where to archive old tracking data</p>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 pt-4">
+                <Button
+                  onClick={savePersonTrackingSettings}
+                  disabled={saving}
+                  className="flex-1"
+                >
+                  <Save className="h-4 w-4 mr-2" />
+                  Save Person Tracking
+                </Button>
+                <Button onClick={resetPersonTracking} variant="outline" disabled={saving}>
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Reset
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Manager Settings */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Activity className="h-5 w-5 text-blue-600" />
+                Manager Configuration
+              </CardTitle>
+              <CardDescription>
+                System manager logging and metrics settings
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Log Level */}
+              <div className="space-y-2">
+                <Label htmlFor="mg-log-level">Log Level</Label>
+                <Select
+                  value={manager.log_level}
+                  onValueChange={(value) => setManager({ ...manager, log_level: value })}
+                >
+                  <SelectTrigger id="mg-log-level">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="DEBUG">DEBUG</SelectItem>
+                    <SelectItem value="INFO">INFO</SelectItem>
+                    <SelectItem value="WARNING">WARNING</SelectItem>
+                    <SelectItem value="ERROR">ERROR</SelectItem>
+                    <SelectItem value="CRITICAL">CRITICAL</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-gray-500">
+                  Verbosity level for system logs (default: INFO)
+                </p>
+              </div>
+
+              {/* Enable Metrics */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="mg-metrics" className="font-semibold flex items-center gap-2">
+                    <TrendingUp className="h-4 w-4" />
+                    Enable Metrics
+                  </Label>
+                  <p className="text-sm text-gray-500">Collect system performance metrics</p>
+                </div>
+                <Switch
+                  id="mg-metrics"
+                  checked={manager.enable_metrics}
+                  onCheckedChange={(checked) =>
+                    setManager({ ...manager, enable_metrics: checked })
+                  }
+                />
+              </div>
+
+              {/* Metrics Interval */}
+              {manager.enable_metrics && (
+                <div className="space-y-2">
+                  <Label htmlFor="mg-interval">Metrics Collection Interval (seconds)</Label>
+                  <Input
+                    id="mg-interval"
+                    type="number"
+                    value={manager.metrics_interval}
+                    onChange={(e) =>
+                      setManager({ ...manager, metrics_interval: parseFloat(e.target.value) })
+                    }
+                  />
+                  <p className="text-xs text-gray-500">
+                    How often to collect metrics (default: 30)
+                  </p>
+                </div>
+              )}
+
+              {/* Info Box */}
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Note:</strong> Changing manager settings may require restarting the
+                  worker process to take effect.
+                </AlertDescription>
+              </Alert>
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 pt-4">
+                <Button onClick={saveManagerSettings} disabled={saving} className="flex-1">
+                  <Save className="h-4 w-4 mr-2" />
+                  Save Manager Settings
+                </Button>
+                <Button onClick={resetManager} variant="outline" disabled={saving}>
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Reset
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </div>
   );
 }

@@ -3,8 +3,14 @@ Event Handlers for WebSocket Events from C++ Worker
 Processes real-time events and updates state cache
 """
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+from datetime import datetime
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from app.services.state_cache import camera_state_cache
+from app.db.base import async_session
+from app.models.profile import Profile
+from app.models.person_event import PersonEvent
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,8 @@ class EventHandler:
             "fps_drop": self.handle_fps_drop,
             "pipeline_crashed": self.handle_pipeline_crashed,
             "pipeline_recovered": self.handle_pipeline_recovered,
+            "person_recognized": self.handle_person_recognized,
+            "face_detected": self.handle_face_detected,
         }
 
         # Statistics
@@ -249,6 +257,129 @@ class EventHandler:
             "is_running": True,
             "last_recovery_time": recovery_time
         })
+
+    # Person Recognition Events
+
+    async def handle_person_recognized(self, event: Dict[str, Any]):
+        """
+        Handle person_recognized event from C++ worker
+
+        1. Find or auto-create profile
+        2. Store PersonEvent in database
+        3. Update profile statistics
+        """
+        camera_id = event.get("camera_id")
+        data = event.get("data", {})
+
+        if not camera_id:
+            logger.error("person_recognized event missing camera_id")
+            return
+
+        subject = data.get("subject")
+        if not subject:
+            logger.error("person_recognized event missing subject")
+            return
+
+        similarity = data.get("similarity", 0.0)
+        detection_confidence = data.get("detection_confidence", 0.0)
+        is_new_person = data.get("is_new_person", False)
+        is_new_at_camera = data.get("is_new_at_camera", False)
+        dwell_time_seconds = data.get("dwell_time_seconds", 0.0)
+        other_cameras = data.get("other_cameras", [])
+
+        logger.info(f"Person recognized: {subject} at {camera_id} "
+                   f"(similarity: {similarity:.2f}, new_person: {is_new_person})")
+
+        try:
+            async with async_session() as db:
+                # Find or create profile
+                result = await db.execute(
+                    select(Profile).where(Profile.compreface_subject_id == subject)
+                )
+                profile = result.scalar_one_or_none()
+
+                if not profile:
+                    # Auto-create profile for unknown person
+                    logger.info(f"Auto-creating profile for subject: {subject}")
+                    profile = Profile(
+                        name=f"Person {subject[:8]}",  # Use first 8 chars of subject ID
+                        compreface_subject_id=subject,
+                        description="Auto-created from face recognition",
+                        is_active=True,
+                        auto_created=True,
+                        alert_on_recognition=False,
+                        total_detections=0,
+                        avg_recognition_similarity=0.0,
+                        images=[],
+                        tags=["auto-created"]
+                    )
+                    db.add(profile)
+                    await db.flush()  # Get profile.id
+
+                # Create PersonEvent
+                person_event = PersonEvent(
+                    profile_id=profile.id,
+                    camera_id=camera_id,
+                    subject=subject,
+                    similarity=similarity,
+                    detection_confidence=detection_confidence,
+                    is_new_person=is_new_person,
+                    is_new_at_camera=is_new_at_camera,
+                    dwell_time_seconds=dwell_time_seconds,
+                    other_cameras=other_cameras,
+                    worker_metadata=data,  # Store full event data
+                    alert_sent=False,
+                    acknowledged=False
+                )
+                db.add(person_event)
+
+                # Update profile statistics
+                profile.total_detections += 1
+                profile.last_seen_at = datetime.utcnow()
+                profile.last_seen_camera_id = camera_id
+
+                # Update rolling average similarity
+                if profile.avg_recognition_similarity == 0.0:
+                    profile.avg_recognition_similarity = similarity
+                else:
+                    # Exponential moving average (weight recent detections more)
+                    alpha = 0.1  # Smoothing factor
+                    profile.avg_recognition_similarity = (
+                        alpha * similarity +
+                        (1 - alpha) * profile.avg_recognition_similarity
+                    )
+
+                await db.commit()
+
+                logger.info(f"Stored PersonEvent for {subject} (total: {profile.total_detections})")
+
+        except Exception as e:
+            logger.error(f"Error handling person_recognized event: {e}", exc_info=True)
+
+    async def handle_face_detected(self, event: Dict[str, Any]):
+        """
+        Handle face_detected event (unknown person)
+
+        For now, just log it. Could be used for:
+        - Alerting about unknown persons
+        - Prompting admin to create profile
+        - Statistics on unknown face detections
+        """
+        camera_id = event.get("camera_id")
+        data = event.get("data", {})
+
+        if not camera_id:
+            logger.error("face_detected event missing camera_id")
+            return
+
+        confidence = data.get("confidence", 0.0)
+        detection_count = data.get("detection_count", 0)
+
+        logger.info(f"Unknown face detected at {camera_id} "
+                   f"(confidence: {confidence:.2f}, count: {detection_count})")
+
+        # Future: Could store these in a separate table for unknown faces
+        # or trigger admin alerts when unknown faces are frequently detected
 
     def get_stats(self) -> Dict[str, Any]:
         """Get event handler statistics"""
