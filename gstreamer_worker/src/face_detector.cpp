@@ -1,5 +1,6 @@
 #include "face_detector.h"
 #include "logger.h"
+#include "cuda_kernels.h"
 
 #include <iostream>
 #include <sstream>
@@ -7,6 +8,7 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
+#include <cuda_runtime.h>
 
 namespace gstreamer_worker {
 
@@ -82,6 +84,18 @@ FaceDetector::~FaceDetector() {
     // Stop CompreFace client
     if (compreface_client_) {
         compreface_client_->stop();
+    }
+
+    // Clean up GPU memory for zero-copy preprocessing
+    if (d_preprocessed_tensor_) {
+        cudaFree(d_preprocessed_tensor_);
+        d_preprocessed_tensor_ = nullptr;
+    }
+
+    // Destroy CUDA stream
+    if (cuda_stream_) {
+        cudaStreamDestroy(cuda_stream_);
+        cuda_stream_ = 0;
     }
 }
 
@@ -307,51 +321,70 @@ bool FaceDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
 
 bool FaceDetector::preprocess_gpu(const cv::cuda::GpuMat& d_frame, std::vector<float>& output) {
     try {
-        // Apply ROI if configured
         cv::cuda::GpuMat d_working = d_frame;
         if (config_.roi.is_valid()) {
             d_working = apply_roi_cuda(d_frame);
         }
 
-        // Resize to model input size (e.g., 640x640)
         cv::cuda::resize(d_working, d_resized_, cv::Size(config_.input_size, config_.input_size));
 
-        // Convert BGR to RGB
-        cv::cuda::cvtColor(d_resized_, d_working_, cv::COLOR_BGR2RGB);
+        const int height   = config_.input_size;
+        const int width    = config_.input_size;
+        const int channels = 3;
+        const size_t tensor_size = static_cast<size_t>(channels) * height * width;
 
-        // Download to CPU for ONNX Runtime
-        cv::Mat h_frame;
-        d_working_.download(h_frame);
-
-        // Convert to float and normalize for SCRFD: (pixel - 127.5) / 128.0 → [-1, 1]
-        // This is equivalent to: pixel / 128.0 - 1.0
-        h_frame.convertTo(h_frame, CV_32F, 1.0 / 128.0, -1.0);
-
-        // Reshape to CHW format (ONNX Runtime expects NCHW)
-        int channels = h_frame.channels();
-        int height = h_frame.rows;
-        int width = h_frame.cols;
-
-        output.resize(1 * channels * height * width);
-
-        // Convert HWC → CHW
-        for (int c = 0; c < channels; c++) {
-            for (int h = 0; h < height; h++) {
-                for (int w = 0; w < width; w++) {
-                    output[c * height * width + h * width + w] =
-                        h_frame.at<cv::Vec3f>(h, w)[c];
-                }
+        if (!d_preprocessed_tensor_ || d_preprocessed_tensor_size_ != tensor_size) {
+            if (d_preprocessed_tensor_) {
+                cudaFree(d_preprocessed_tensor_);
             }
+            cudaMalloc(&d_preprocessed_tensor_, tensor_size * sizeof(float));
+            d_preprocessed_tensor_size_ = tensor_size;
+
+            if (!cuda_stream_) {
+                cudaStreamCreate(&cuda_stream_);
+            }
+
+            std::cout << "[FaceDetector:" << camera_id_ << "] Allocated GPU tensor: "
+                      << tensor_size * sizeof(float) / (1024 * 1024) << " MB" << std::endl;
         }
 
-        return true;
+        // 🔴 IMPORTANT: use GpuMat.step (bytes per row)
+        const int input_step = static_cast<int>(d_resized_.step);
 
+        launch_preprocess_face_detection_coalesced(
+            d_resized_.ptr<uint8_t>(),
+            input_step,
+            d_preprocessed_tensor_,
+            height,
+            width,
+            cuda_stream_
+        );
+
+        cudaStreamSynchronize(cuda_stream_);
+
+        output.resize(tensor_size);
+        cudaMemcpy(output.data(), d_preprocessed_tensor_,
+                   tensor_size * sizeof(float), cudaMemcpyDeviceToHost);
+
+#ifdef DEBUG
+        // Optional: sanity-check input range
+        auto [min_it, max_it] = std::minmax_element(output.begin(), output.end());
+        std::cout << "[DEBUG] input_tensor min=" << *min_it
+                  << " max=" << *max_it << std::endl;
+#endif
+
+        return true;
     } catch (const std::exception& e) {
         std::cerr << "[FaceDetector:" << camera_id_ << "] Preprocessing error: "
                   << e.what() << std::endl;
         return false;
+    } catch (const cudaError_t& err) {
+        std::cerr << "[FaceDetector:" << camera_id_ << "] CUDA error: "
+                  << cudaGetErrorString(err) << std::endl;
+        return false;
     }
 }
+
 
 bool FaceDetector::run_inference(
     const std::vector<float>& input_tensor,

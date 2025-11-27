@@ -21,6 +21,10 @@
 #include <deque>
 #include <vector>
 
+// Forward declare CUDA types to avoid including cuda_runtime.h in header
+struct CUstream_st;
+typedef struct CUstream_st* cudaStream_t;
+
 namespace gstreamer_worker {
 
 /**
@@ -184,6 +188,11 @@ private:
     cv::cuda::GpuMat d_working_;
     cv::cuda::GpuMat d_resized_;
     cv::cuda::GpuMat d_normalized_;
+
+    // Zero-copy GPU preprocessing buffers
+    float* d_preprocessed_tensor_ = nullptr;  // GPU tensor for preprocessed data
+    size_t d_preprocessed_tensor_size_ = 0;   // Size in elements
+    cudaStream_t cuda_stream_ = 0;             // CUDA stream for async operations
 
     // Processing state
     std::atomic<uint64_t> frame_counter_;

@@ -1,10 +1,22 @@
 cmake_minimum_required(VERSION 3.16)
-project(GStreamerWorker VERSION 1.0.0 LANGUAGES CXX)
+
+# Set CUDA compiler and toolkit before project declaration
+set(CMAKE_CUDA_COMPILER /usr/local/cuda-12.6/bin/nvcc)
+set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda-12.6)
+set(CMAKE_CUDA_COMPILER_TOOLKIT_ROOT /usr/local/cuda-12.6)
+
+project(GStreamerWorker VERSION 1.0.0 LANGUAGES CXX CUDA)
 
 # C++ Standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# CUDA Standard and Architecture
+set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
+set(CMAKE_CUDA_ARCHITECTURES 75)  # T1000 is Turing architecture (SM 75)
 
 # Compiler flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
@@ -114,6 +126,8 @@ include_directories(
     ${GLIB_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
     ${ONNXRUNTIME_INCLUDE_DIRS}
+    ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+    /usr/local/cuda-12.6/include
 )
 
 # Link directories
@@ -137,6 +151,11 @@ set(SOURCES
     src/event_broadcaster.cpp
 )
 
+# CUDA kernel files for zero-copy GPU preprocessing
+set(CUDA_SOURCES
+    src/cuda_kernels.cu
+)
+
 # API Server sources
 set(API_SOURCES
     src/api_server.cpp
@@ -156,10 +175,19 @@ set(HEADERS
     include/compreface_client.h
     include/websocket_server.h
     include/event_broadcaster.h
+    include/callback_queue.h
+    include/cuda_kernels.h
 )
 
 # Create library
-add_library(gstreamer_worker_lib STATIC ${SOURCES} ${HEADERS})
+add_library(gstreamer_worker_lib STATIC ${SOURCES} ${CUDA_SOURCES} ${HEADERS})
+
+# Set CUDA compilation flags
+set_target_properties(gstreamer_worker_lib PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
+
 target_link_libraries(gstreamer_worker_lib
     ${GSTREAMER_LIBRARIES}
     ${GLIB_LIBRARIES}
@@ -170,6 +198,7 @@ target_link_libraries(gstreamer_worker_lib
     Threads::Threads
     nlohmann_json::nlohmann_json
     ixwebsocket
+    cudart
 )
 
 # Main executable (single camera)
