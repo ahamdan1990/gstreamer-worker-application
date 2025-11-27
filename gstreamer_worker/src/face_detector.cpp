@@ -1046,25 +1046,50 @@ void FaceDetector::update_face_tracking(const std::vector<FaceDetection>& detect
 
     auto now = std::chrono::steady_clock::now();
 
-    // Add new faces to tracking
+    // CRITICAL FIX (Issue #7): Remove stale tracks FIRST to prevent unbounded memory growth
+    // Remove faces that haven't been seen for face_tracking_timeout_ seconds
+    tracked_faces_.erase(
+        std::remove_if(tracked_faces_.begin(), tracked_faces_.end(),
+            [this, now](const TrackedFace& tf) {
+                auto time_since_last_seen = std::chrono::duration<double>(now - tf.last_seen).count();
+                if (time_since_last_seen > face_tracking_timeout_) {
+                    std::cout << "[FaceDetector:" << camera_id_ << "] Removing stale track "
+                              << "(last seen " << time_since_last_seen << "s ago, "
+                              << "tracked for " << tf.frames_tracked << " frames)" << std::endl;
+                    return true;  // Remove this track
+                }
+                return false;  // Keep this track
+            }),
+        tracked_faces_.end()
+    );
+
+    // Update existing tracks or add new faces
     for (const auto& detection : detections) {
-        // Check if already tracked
+        // Check if already tracked (update existing track)
         bool already_tracked = false;
-        for (const auto& tracked : tracked_faces_) {
+        for (auto& tracked : tracked_faces_) {
             float iou = calculate_iou(detection.bbox, tracked.bbox);
             if (iou > face_tracking_iou_threshold_) {
+                // Update existing track
+                tracked.bbox = detection.bbox;
+                tracked.last_seen = now;
+                tracked.frames_tracked++;
                 already_tracked = true;
                 break;
             }
         }
 
         if (!already_tracked) {
+            // Add new track
             TrackedFace tf;
             tf.bbox = detection.bbox;
             tf.first_seen = now;
             tf.last_seen = now;
             tf.frames_tracked = 1;
             tracked_faces_.push_back(tf);
+
+            std::cout << "[FaceDetector:" << camera_id_ << "] Started tracking new face "
+                      << "(total tracks: " << tracked_faces_.size() << ")" << std::endl;
         }
     }
 }

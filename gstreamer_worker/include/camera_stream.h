@@ -4,6 +4,7 @@
 #include "config.h"
 #include "types.h"
 #include "person_tracker.h"
+#include "callback_queue.h"
 
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
@@ -170,6 +171,9 @@ private:
     GstBus* bus_ = nullptr;
     GMainLoop* loop_ = nullptr;
 
+    // Thread-safe callback queue (prevents race conditions from GStreamer callbacks)
+    std::unique_ptr<CallbackQueue> callback_queue_;
+
     // Motion detection
     std::unique_ptr<MotionDetector> motion_detector_;
     std::atomic<bool> motion_detection_enabled_;
@@ -199,11 +203,13 @@ private:
     std::atomic<int> reconnect_attempts_;
     std::atomic<double> reconnect_delay_;
     std::unique_ptr<std::thread> reconnect_timer_;
+    std::atomic<bool> reconnect_timer_running_{false};
 
     // Health monitoring
     std::chrono::steady_clock::time_point last_frame_time_;
     std::atomic<int> consecutive_errors_;
     std::unique_ptr<std::thread> health_check_timer_;
+    std::atomic<bool> health_check_timer_running_{false};
 
     // Metrics
     mutable std::mutex metrics_mutex_;
@@ -279,6 +285,22 @@ private:
      * @brief Draw face detections using Cairo on live video feed
      */
     void draw_cairo_overlay(cairo_t* cr);
+
+    /**
+     * @brief Start/stop reconnect timer thread
+     */
+    void start_reconnect_timer();
+    void stop_reconnect_timer();
+
+    /**
+     * @brief Start/stop health check timer thread
+     */
+    void stop_health_check_timer();
+
+    /**
+     * @brief Process pending callback queue tasks
+     */
+    void process_pending_callbacks();
 };
 
 } // namespace gstreamer_worker

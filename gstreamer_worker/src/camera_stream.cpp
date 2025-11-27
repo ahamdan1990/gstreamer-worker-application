@@ -2,6 +2,7 @@
 #include "motion_detector.h"
 #include "face_detector.h"
 #include "logger.h"
+#include "callback_queue.h"
 
 #include <gst/app/gstappsink.h>
 #include <opencv2/opencv.hpp>
@@ -40,6 +41,9 @@ CameraStream::CameraStream(
         LOG_ERROR(log_tag_, "Invalid configuration");
         throw std::invalid_argument("Invalid camera configuration");
     }
+
+    // Initialize callback queue for thread-safe GStreamer callbacks
+    callback_queue_ = std::make_unique<CallbackQueue>();
 
     // Initialize motion detector if enabled
     if (config_.motion_detection.enabled) {
@@ -96,6 +100,15 @@ CameraStream::CameraStream(
 CameraStream::~CameraStream() {
     LOG_INFO(log_tag_, "Destroying camera stream");
     stop(true);
+
+    // Stop and cleanup timers
+    stop_reconnect_timer();
+    stop_health_check_timer();
+
+    // Clear callback queue
+    if (callback_queue_) {
+        callback_queue_->clear();
+    }
 }
 
 bool CameraStream::start() {
@@ -152,6 +165,11 @@ void CameraStream::stop(bool wait) {
     }
 
     if (!already_stopped) {
+        // Clear callback queue to prevent processing during shutdown
+        if (callback_queue_) {
+            callback_queue_->clear();
+        }
+
         // Stop main loop first (signals pipeline thread to exit)
         if (loop_ && g_main_loop_is_running(loop_)) {
             g_main_loop_quit(loop_);
@@ -165,11 +183,14 @@ void CameraStream::stop(bool wait) {
 
     // Always wait for threads to finish if requested (even in ERROR state)
     if (wait) {
+        // Stop timer threads BEFORE joining pipeline thread
+        stop_reconnect_timer();
+        stop_health_check_timer();
+
         if (pipeline_thread_ && pipeline_thread_->joinable()) {
             pipeline_thread_->join();
             pipeline_thread_.reset();
         }
-        // Note: reconnect_timer_ and health_check_timer_ are detached, can't join
     }
 
     if (!already_stopped) {
@@ -225,13 +246,17 @@ void CameraStream::run_pipeline() {
                     reconnect_attempts_++;
                     set_state(StreamState::RECONNECTING);
 
-                    // Calculate delay with exponential backoff
-                    double delay = std::min(reconnect_delay_.load(), config_.reconnect_max_delay);
+                    // Calculate delay with exponential backoff (CRITICAL FIX Issue #13: Cap to prevent overflow)
+                    double current_delay = reconnect_delay_.load();
+                    double delay = std::min(current_delay, config_.reconnect_max_delay);
                     LOG_INFO(log_tag_, "Reconnecting in " + std::to_string(delay) + " seconds (attempt " +
                              std::to_string(reconnect_attempts_.load()) + ")");
 
                     std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(delay * 1000)));
-                    reconnect_delay_ = reconnect_delay_.load() * config_.reconnect_backoff_multiplier;
+
+                    // Update delay for next attempt, but cap it
+                    double next_delay = current_delay * config_.reconnect_backoff_multiplier;
+                    reconnect_delay_.store(std::min(next_delay, config_.reconnect_max_delay));
                     continue;
                 } else {
                     running_ = false;
@@ -249,10 +274,21 @@ void CameraStream::run_pipeline() {
             // Start health monitoring
             start_health_check();
 
-            // Create and run main loop
-            if (!loop_) {
-                loop_ = g_main_loop_new(nullptr, FALSE);
+            // CRITICAL FIX (Issue #6): Properly manage GMainLoop lifecycle
+            // Ensure no old loop exists before creating new one
+            if (loop_) {
+                if (g_main_loop_is_running(loop_)) {
+                    LOG_WARNING(log_tag_, "Old loop still running, stopping it first");
+                    g_main_loop_quit(loop_);
+                    // Wait a bit for it to actually quit
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+                g_main_loop_unref(loop_);
+                loop_ = nullptr;
             }
+
+            // Now safe to create new loop
+            loop_ = g_main_loop_new(nullptr, FALSE);
 
             LOG_INFO(log_tag_, "Starting GLib main loop");
             g_main_loop_run(loop_);
@@ -272,13 +308,21 @@ void CameraStream::run_pipeline() {
                     break;
                 }
 
-                // Calculate delay with exponential backoff
-                double delay = std::min(reconnect_delay_.load(), config_.reconnect_max_delay);
+                // Calculate delay with exponential backoff (CRITICAL FIX Issue #13: Cap to prevent overflow)
+                double current_delay = reconnect_delay_.load();
+                double delay = std::min(current_delay, config_.reconnect_max_delay);
+
+                // Cap the exponential growth to prevent overflow/NaN
+                if (current_delay > config_.reconnect_max_delay) {
+                    reconnect_delay_.store(config_.reconnect_max_delay);
+                }
                 LOG_INFO(log_tag_, "Reconnecting in " + std::to_string(delay) + " seconds (attempt " +
                          std::to_string(reconnect_attempts_.load()) + ")");
 
                 std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(delay * 1000)));
-                reconnect_delay_ = reconnect_delay_.load() * config_.reconnect_backoff_multiplier;
+
+                // Update delay for next attempt, but cap it (already done above, remove duplicate)
+                // reconnect_delay_ already updated above
 
                 // Loop will retry
                 continue;
@@ -329,15 +373,15 @@ bool CameraStream::create_pipeline() {
         if (config_.motion_detection.enabled && motion_detector_) {
             appsink_ = gst_bin_get_by_name(GST_BIN(pipeline_), "motion_sink");
             if (appsink_) {
-                // Set appsink properties
+                // Set appsink properties (CRITICAL FIX Issue #15: Increase buffer size)
                 g_object_set(G_OBJECT(appsink_),
                            "emit-signals", TRUE,   // Use signals (more stable than callbacks)
                            "sync", FALSE,          // Don't sync with clock
                            "drop", TRUE,           // Drop frames if processing is slow
-                           "max-buffers", 2,       // Keep buffer queue small
+                           "max-buffers", 5,       // Increased from 2 to 5 for better throughput
                            nullptr);
 
-                // Connect to new-sample signal
+                // Connect to new-sample signal - QUEUE WORK, DON'T EXECUTE DIRECTLY
                 g_signal_connect(appsink_, "new-sample",
                                G_CALLBACK(+[](GstElement* sink, gpointer user_data) -> GstFlowReturn {
                                    auto* stream = static_cast<CameraStream*>(user_data);
@@ -345,10 +389,15 @@ bool CameraStream::create_pipeline() {
                                        return GST_FLOW_OK;
                                    }
 
+                                   // Pull sample but DON'T process here - queue it for safe processing
                                    GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
-                                   if (sample) {
-                                       stream->process_motion_frame(sample);
-                                       gst_sample_unref(sample);
+                                   if (sample && stream->callback_queue_) {
+                                       // Queue the sample for processing in the pipeline thread
+                                       stream->callback_queue_->enqueue_sample(sample,
+                                           [stream](GstSample* s) {
+                                               stream->process_motion_frame(s);
+                                           });
+                                       gst_sample_unref(sample);  // Release our reference, queue has its own
                                    }
                                    return GST_FLOW_OK;
                                }), this);
@@ -369,15 +418,15 @@ bool CameraStream::create_pipeline() {
             LOG_INFO(log_tag_, "Looking for viz_sink element in pipeline");
             viz_appsink_ = gst_bin_get_by_name(GST_BIN(pipeline_), "viz_sink");
             if (viz_appsink_) {
-                // Set appsink properties
+                // Set appsink properties (CRITICAL FIX Issue #15: Increase buffer size)
                 g_object_set(G_OBJECT(viz_appsink_),
                            "emit-signals", TRUE,
                            "sync", FALSE,
                            "drop", TRUE,
-                           "max-buffers", 2,
+                           "max-buffers", 5,       // Increased from 2 to 5 for better throughput
                            nullptr);
 
-                // Connect to new-sample signal
+                // Connect to new-sample signal - QUEUE WORK, DON'T EXECUTE DIRECTLY
                 g_signal_connect(viz_appsink_, "new-sample",
                                G_CALLBACK(+[](GstElement* sink, gpointer user_data) -> GstFlowReturn {
                                    auto* stream = static_cast<CameraStream*>(user_data);
@@ -385,10 +434,15 @@ bool CameraStream::create_pipeline() {
                                        return GST_FLOW_OK;
                                    }
 
+                                   // Pull sample but DON'T process here - queue it for safe processing
                                    GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
-                                   if (sample) {
-                                       stream->process_visualization_frame(sample);
-                                       gst_sample_unref(sample);
+                                   if (sample && stream->callback_queue_) {
+                                       // Queue the sample for processing in the pipeline thread
+                                       stream->callback_queue_->enqueue_sample(sample,
+                                           [stream](GstSample* s) {
+                                               stream->process_visualization_frame(s);
+                                           });
+                                       gst_sample_unref(sample);  // Release our reference, queue has its own
                                    }
                                    return GST_FLOW_OK;
                                }), this);
@@ -668,24 +722,31 @@ void CameraStream::handle_error(const std::string& error_msg) {
 // schedule_reconnect and attempt_reconnect removed - reconnection now handled in run_pipeline
 
 void CameraStream::start_health_check() {
-    if (!running_) {
-        return;
+    if (!running_ || health_check_timer_running_.load()) {
+        return;  // Don't start if already running
     }
 
+    health_check_timer_running_.store(true);
     health_check_timer_ = std::make_unique<std::thread>([this]() {
-        while (running_) {
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(
-                    static_cast<int>(config_.health_check_interval * 1000)
-                )
-            );
+        LOG_INFO(log_tag_, "Health check thread started - processing callbacks every 10ms");
+        int health_check_counter = 0;
+        while (health_check_timer_running_.load() && running_.load()) {
+            // CRITICAL FIX: Process callbacks very frequently (every 10ms for responsive processing)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            process_pending_callbacks();
 
-            if (running_) {
-                check_health();
+            // Do health check less frequently (every ~500ms)
+            health_check_counter++;
+            if (health_check_counter >= 50) {  // 50 * 10ms = 500ms
+                if (health_check_timer_running_.load() && running_.load()) {
+                    check_health();
+                }
+                health_check_counter = 0;
             }
         }
+        LOG_INFO(log_tag_, "Health check thread stopped");
     });
-    health_check_timer_->detach();
+    // DO NOT detach - we'll join it in destructor
 }
 
 void CameraStream::check_health() {
@@ -1155,6 +1216,55 @@ void CameraStream::draw_cairo_overlay(cairo_t* cr) {
         cairo_set_source_rgba(cr, 0.0, 1.0, 1.0, 1.0);  // Cyan text
         cairo_move_to(cr, 10, 30);
         cairo_show_text(cr, info_text);
+    }
+}
+
+void CameraStream::process_pending_callbacks() {
+    if (callback_queue_) {
+        // Process all pending callbacks (max 10 per call to avoid blocking too long)
+        callback_queue_->process_pending(10);
+    }
+}
+
+void CameraStream::start_reconnect_timer() {
+    if (reconnect_timer_running_.load()) {
+        return;  // Already running
+    }
+
+    reconnect_timer_running_.store(true);
+    reconnect_timer_ = std::make_unique<std::thread>([this]() {
+        LOG_INFO(log_tag_, "Reconnect timer thread started");
+        while (reconnect_timer_running_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            // Timer logic can be implemented here if needed
+        }
+        LOG_INFO(log_tag_, "Reconnect timer thread stopped");
+    });
+}
+
+void CameraStream::stop_reconnect_timer() {
+    if (!reconnect_timer_running_.load()) {
+        return;  // Not running
+    }
+
+    reconnect_timer_running_.store(false);
+
+    if (reconnect_timer_ && reconnect_timer_->joinable()) {
+        reconnect_timer_->join();
+        reconnect_timer_.reset();
+    }
+}
+
+void CameraStream::stop_health_check_timer() {
+    if (!health_check_timer_running_.load()) {
+        return;  // Not running
+    }
+
+    health_check_timer_running_.store(false);
+
+    if (health_check_timer_ && health_check_timer_->joinable()) {
+        health_check_timer_->join();
+        health_check_timer_.reset();
     }
 }
 

@@ -281,18 +281,35 @@ bool MotionDetector::preprocess_frame_cuda(const cv::Mat& frame, cv::cuda::GpuMa
             d_gray_ = d_working;
         }
 
-        // Apply Gaussian blur
-        auto gaussian_filter = cv::cuda::createGaussianFilter(
-            d_gray_.type(), d_gray_.type(),
-            cv::Size(config_.blur_size, config_.blur_size), 0
-        );
-        gaussian_filter->apply(d_gray_, d_processed);
+        // Create and cache Gaussian filter (CRITICAL FIX: Issue #5)
+        // Only recreate if blur_size changed
+        if (!gaussian_filter_ || gaussian_filter_kernel_size_ != config_.blur_size) {
+            gaussian_filter_ = cv::cuda::createGaussianFilter(
+                d_gray_.type(), d_gray_.type(),
+                cv::Size(config_.blur_size, config_.blur_size), 0
+            );
+            gaussian_filter_kernel_size_ = config_.blur_size;
+            std::cout << "[MotionDetector:" << camera_id_ << "] Created cached Gaussian filter (kernel size: "
+                      << config_.blur_size << ")" << std::endl;
+        }
+        gaussian_filter_->apply(d_gray_, d_processed);
 
         return true;
 
     } catch (const cv::Exception& e) {
         std::cerr << "[MotionDetector:" << camera_id_ << "] CUDA preprocessing error: "
                   << e.what() << std::endl;
+
+        // CRITICAL FIX (Issue #3): Clean up GPU memory on exception to prevent leaks
+        try {
+            d_frame_.release();
+            d_gray_.release();
+            d_resized_.release();
+            d_blurred_.release();
+        } catch (...) {
+            // Ignore errors during cleanup
+        }
+
         return false;
     }
 }
