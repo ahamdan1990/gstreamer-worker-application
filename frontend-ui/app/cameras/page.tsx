@@ -15,7 +15,7 @@ import {
   RefreshCw,
   Eye
 } from 'lucide-react';
-import { Header } from '@/components/header';
+import { Layout, PageHeader } from '@/components/layout';
 import apiClient from '@/lib/api';
 import wsClient from '@/lib/websocket';
 import type { Camera as CameraType } from '@/lib/types';
@@ -97,12 +97,16 @@ export default function CamerasPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
-      <Header
+    <Layout wsConnected={wsConnected}>
+      <PageHeader
         title="Cameras"
         description="Manage your camera fleet"
-        wsConnected={wsConnected}
-        onRefresh={loadCameras}
+        action={
+          <Button onClick={loadCameras} variant="outline" size="sm">
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Refresh
+          </Button>
+        }
       />
 
       <main className="container mx-auto px-6 py-8">
@@ -230,6 +234,6 @@ export default function CamerasPage() {
           </div>
         )}
       </main>
-    </div>
+    </Layout>
   );
 }

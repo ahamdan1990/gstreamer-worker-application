@@ -82,6 +82,7 @@ struct PersonRecognitionEvent {
     bool is_new_at_camera;         // First time at this camera
     double dwell_time_seconds;     // How long at this camera
     std::vector<std::string> other_cameras;  // Other cameras where seen
+    std::string face_crop_path;    // Path to saved face crop image
 };
 
 /**
@@ -153,11 +154,13 @@ public:
      * @param camera_id Camera identifier
      * @param result Recognition result from CompreFace
      * @param detection Face detection data
+     * @param face_crop_path Path to the saved face crop image
      */
     void update_person(
         const std::string& camera_id,
         const RecognitionResult& result,
-        const FaceDetection& detection
+        const FaceDetection& detection,
+        const std::string& face_crop_path = ""
     );
 
     /**

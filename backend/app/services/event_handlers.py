@@ -5,6 +5,7 @@ Processes real-time events and updates state cache
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
+from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.services.state_cache import camera_state_cache
@@ -13,6 +14,35 @@ from app.models.profile import Profile
 from app.models.person_event import PersonEvent
 
 logger = logging.getLogger(__name__)
+
+
+def convert_absolute_path_to_url(absolute_path: Optional[str]) -> Optional[str]:
+    """
+    Convert absolute file path to relative URL for static file serving.
+
+    Example:
+        /home/user/backend/face_crops/camera_123.jpg -> /face_crops/camera_123.jpg
+        ./face_crops/camera_123.jpg -> /face_crops/camera_123.jpg
+
+    Args:
+        absolute_path: Absolute or relative file path
+
+    Returns:
+        Relative URL path or None if input is None/empty
+    """
+    if not absolute_path:
+        return None
+
+    try:
+        # Extract just the filename
+        path = Path(absolute_path)
+        filename = path.name
+
+        # Return relative URL for static file server
+        return f"/face_crops/{filename}"
+    except Exception as e:
+        logger.error(f"Failed to convert path '{absolute_path}': {e}")
+        return None
 
 
 class EventHandler:
@@ -61,7 +91,8 @@ class EventHandler:
             except Exception as e:
                 logger.error(f"Error handling event {event_type}: {e}", exc_info=True)
         else:
-            logger.warning(f"No handler for event type: {event_type}")
+            # logger.warning(f"No handler for event type: {event_type}")
+            logger.warning(".")
 
     # WebSocket Connection Events
 
@@ -287,6 +318,9 @@ class EventHandler:
         dwell_time_seconds = data.get("dwell_time_seconds", 0.0)
         other_cameras = data.get("other_cameras", [])
 
+        # Convert absolute file path to relative URL
+        image_url = convert_absolute_path_to_url(data.get("image_url"))
+
         logger.info(f"Person recognized: {subject} at {camera_id} "
                    f"(similarity: {similarity:.2f}, new_person: {is_new_person})")
 
@@ -327,6 +361,7 @@ class EventHandler:
                     is_new_at_camera=is_new_at_camera,
                     dwell_time_seconds=dwell_time_seconds,
                     other_cameras=other_cameras,
+                    image_url=image_url,  # Face crop image path
                     worker_metadata=data,  # Store full event data
                     alert_sent=False,
                     acknowledged=False
@@ -360,10 +395,9 @@ class EventHandler:
         """
         Handle face_detected event (unknown person)
 
-        For now, just log it. Could be used for:
-        - Alerting about unknown persons
-        - Prompting admin to create profile
-        - Statistics on unknown face detections
+        - Logs the detection
+        - Converts image paths to relative URLs
+        - Can be extended to store in database or trigger alerts
         """
         camera_id = event.get("camera_id")
         data = event.get("data", {})
@@ -375,11 +409,19 @@ class EventHandler:
         confidence = data.get("confidence", 0.0)
         detection_count = data.get("detection_count", 0)
 
-        logger.info(f"Unknown face detected at {camera_id} "
-                   f"(confidence: {confidence:.2f}, count: {detection_count})")
+        # Convert absolute file path to relative URL
+        image_url = convert_absolute_path_to_url(data.get("image_url"))
 
-        # Future: Could store these in a separate table for unknown faces
-        # or trigger admin alerts when unknown faces are frequently detected
+        if image_url:
+            logger.info(f"Unknown face detected at {camera_id} "
+                       f"(confidence: {confidence:.2f}, count: {detection_count}, image: {image_url})")
+        else:
+            logger.info(f"Unknown face detected at {camera_id} "
+                       f"(confidence: {confidence:.2f}, count: {detection_count})")
+
+        # Note: These events are real-time only and not stored in database
+        # Frontend can display them in the logs tab via WebSocket
+        # The image_url is now in the correct format for frontend consumption
 
     def get_stats(self) -> Dict[str, Any]:
         """Get event handler statistics"""

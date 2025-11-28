@@ -10,6 +10,7 @@ from uuid import UUID
 
 from app.db.base import get_db
 from app.models.camera import Camera
+from app.models.settings import GlobalSettings
 from app.schemas.camera import (
     CameraCreate,
     CameraUpdate,
@@ -32,6 +33,23 @@ router = APIRouter()
 def get_worker_client() -> WorkerClient:
     """Get worker client instance"""
     return WorkerClient(base_url=settings.WORKER_API_URL)
+
+
+async def get_global_similarity_threshold(db: AsyncSession) -> float:
+    """Get the global CompreFace similarity threshold from settings"""
+    try:
+        result = await db.execute(
+            select(GlobalSettings).where(GlobalSettings.setting_key == "compreface_recognition")
+        )
+        setting = result.scalar_one_or_none()
+
+        if setting and "similarity_threshold" in setting.setting_value:
+            return float(setting.setting_value["similarity_threshold"])
+    except Exception as e:
+        logger.warning(f"Failed to fetch global similarity threshold: {e}")
+
+    # Default fallback
+    return 0.88
 
 
 @router.get("/", response_model=List[CameraResponse])
@@ -95,6 +113,12 @@ async def create_camera(
         camera_dict['motion_detection_enabled'] = motion_config.get('enabled', False)
         camera_dict['motion_detection_config'] = motion_config
 
+    # Handle face detection separately
+    face_config = camera_dict.pop('face_detection', None)
+    if face_config:
+        camera_dict['face_detection_enabled'] = face_config.get('enabled', False)
+        camera_dict['face_detection_config'] = face_config
+
     camera = Camera(**camera_dict)
     db.add(camera)
     await db.commit()
@@ -108,6 +132,15 @@ async def create_camera(
             from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
             worker_motion_config = WorkerMotionConfig(**camera.motion_detection_config)
 
+        # Build face detection config if enabled
+        worker_face_config = None
+        if camera.face_detection_enabled and camera.face_detection_config:
+            from app.services.worker_client import FaceDetectionConfig as WorkerFaceConfig
+            # Apply global similarity threshold
+            face_config_dict = camera.face_detection_config.copy()
+            face_config_dict['compreface_similarity_threshold'] = await get_global_similarity_threshold(db)
+            worker_face_config = WorkerFaceConfig(**face_config_dict)
+
         worker_config = WorkerCameraConfig(
             camera_id=camera.camera_id,
             rtsp_url=camera.rtsp_url,
@@ -118,7 +151,8 @@ async def create_camera(
             target_fps=camera.target_fps,
             enable_display=camera.enable_display,
             use_nvidia_decoder=camera.use_nvidia_decoder,
-            motion_detection=worker_motion_config
+            motion_detection=worker_motion_config,
+            face_detection=worker_face_config
         )
         # Use add_or_update for idempotent operation
         await worker.add_or_update_camera(worker_config)
@@ -183,6 +217,12 @@ async def update_camera(
         camera.motion_detection_enabled = motion_config.get('enabled', False)
         camera.motion_detection_config = motion_config
 
+    # Handle face detection separately
+    face_config = update_data.pop('face_detection', None)
+    if face_config is not None:
+        camera.face_detection_enabled = face_config.get('enabled', False)
+        camera.face_detection_config = face_config
+
     # Update other fields
     for field, value in update_data.items():
         setattr(camera, field, value)
@@ -200,6 +240,15 @@ async def update_camera(
             from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
             worker_motion_config = WorkerMotionConfig(**camera.motion_detection_config)
 
+        # Build face detection config if enabled
+        worker_face_config = None
+        if camera.face_detection_enabled and camera.face_detection_config:
+            from app.services.worker_client import FaceDetectionConfig as WorkerFaceConfig
+            # Apply global similarity threshold
+            face_config_dict = camera.face_detection_config.copy()
+            face_config_dict['compreface_similarity_threshold'] = await get_global_similarity_threshold(db)
+            worker_face_config = WorkerFaceConfig(**face_config_dict)
+
         worker_config = WorkerCameraConfig(
             camera_id=camera.camera_id,
             rtsp_url=camera.rtsp_url,
@@ -210,7 +259,8 @@ async def update_camera(
             target_fps=camera.target_fps,
             enable_display=camera.enable_display,
             use_nvidia_decoder=camera.use_nvidia_decoder,
-            motion_detection=worker_motion_config
+            motion_detection=worker_motion_config,
+            face_detection=worker_face_config
         )
 
         # Update worker configuration (remove and re-add with new config)
@@ -533,7 +583,8 @@ async def update_face_detection_config(
     camera_id: str,
     enabled: bool = Form(...),
     config: str = Form(...),  # JSON string
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    worker: WorkerClient = Depends(get_worker_client)
 ):
     """Update face detection configuration for a camera"""
     import json
@@ -558,6 +609,9 @@ async def update_face_detection_config(
             detail="Invalid JSON for config"
         )
 
+    # Track if camera was running before update
+    was_running = camera.is_running
+
     # Update camera
     camera.face_detection_enabled = enabled
     camera.face_detection_config = config_dict
@@ -565,13 +619,54 @@ async def update_face_detection_config(
     await db.commit()
     await db.refresh(camera)
 
-    # TODO: Notify worker to reload configuration
+    # Notify worker to reload configuration
+    try:
+        # Build motion detection config if enabled
+        worker_motion_config = None
+        if camera.motion_detection_enabled and camera.motion_detection_config:
+            from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
+            worker_motion_config = WorkerMotionConfig(**camera.motion_detection_config)
+
+        # Build face detection config with new settings
+        worker_face_config = None
+        if camera.face_detection_enabled and camera.face_detection_config:
+            from app.services.worker_client import FaceDetectionConfig as WorkerFaceConfig
+            worker_face_config = WorkerFaceConfig(**camera.face_detection_config)
+
+        worker_config = WorkerCameraConfig(
+            camera_id=camera.camera_id,
+            rtsp_url=camera.rtsp_url,
+            username=camera.username,
+            password=camera.password,
+            protocols=camera.protocols,
+            latency_ms=camera.latency_ms,
+            target_fps=camera.target_fps,
+            enable_display=camera.enable_display,
+            use_nvidia_decoder=camera.use_nvidia_decoder,
+            motion_detection=worker_motion_config,
+            face_detection=worker_face_config
+        )
+
+        # Update worker configuration (remove and re-add with new config)
+        await worker.add_or_update_camera(worker_config)
+        logger.info(f"Synced face detection config to worker for camera {camera_id}")
+
+        # Restart camera if it was running before the update
+        if was_running:
+            await worker.start_camera(camera_id)
+            logger.info(f"Restarted camera {camera_id} with new face detection configuration")
+            camera.is_running = True
+            await db.commit()
+
+    except Exception as e:
+        logger.error(f"Failed to sync face detection config to worker: {e}")
+        # Don't fail the request - configuration is updated in database
 
     return {
         "camera_id": camera_id,
         "enabled": camera.face_detection_enabled,
         "config": camera.face_detection_config,
-        "message": "Face detection configuration updated successfully"
+        "message": "Face detection configuration updated successfully and synced to worker"
     }
 
 
@@ -605,6 +700,17 @@ async def reset_face_detection_config(
         "max_faces": 30,
         "required_frames": 1,
         "cooldown_seconds": 0.3,
+        # Face Quality Filtering
+        "enable_frontal_face_filter": True,
+        "eye_tilt_threshold": 0.3,
+        "min_eye_distance": 0.01,
+        "nose_center_offset_threshold": 0.3,
+        "eye_to_face_ratio_min": 0.25,
+        "eye_to_face_ratio_max": 0.65,
+        "enable_min_face_size_filter": True,
+        "min_face_width": 80,
+        "min_face_height": 80,
+        # Hardware
         "use_tensorrt": True,
         "use_cuda": True,
         "max_batch_size": 4,

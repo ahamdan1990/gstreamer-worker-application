@@ -26,6 +26,66 @@ class MotionDetectionConfig(BaseModel):
     roi: Optional[Dict] = None
 
 
+class FaceDetectionConfig(BaseModel):
+    """Face detection configuration - all 46 parameters"""
+    enabled: bool = False
+    # Model Configuration
+    model_path: str = "models/scrfd/scrfd_10g_bnkps.onnx"
+    input_size: int = 640
+    confidence_threshold: float = 0.3
+    nms_threshold: float = 0.5
+    # Frame Processing
+    frame_skip: int = 2
+    max_frame_width: int = 1920
+    max_frame_height: int = 1080
+    # Face Detection Parameters
+    min_face_size: float = 0.0003
+    max_faces: int = 30
+    required_frames: int = 1
+    cooldown_seconds: float = 0.3
+    # Face Quality Filtering (NEW)
+    enable_frontal_face_filter: bool = True
+    eye_tilt_threshold: float = 0.3
+    min_eye_distance: float = 0.01
+    nose_center_offset_threshold: float = 0.3
+    eye_to_face_ratio_min: float = 0.25
+    eye_to_face_ratio_max: float = 0.65
+    enable_min_face_size_filter: bool = True
+    min_face_width: int = 80
+    min_face_height: int = 80
+    # TensorRT/CUDA Settings
+    use_tensorrt: bool = True
+    use_cuda: bool = True
+    max_batch_size: int = 4
+    # Face Saving Configuration
+    save_faces: bool = True
+    save_path: str = "./face_crops"
+    save_margin: float = 0.3
+    min_save_confidence: float = 0.2
+    max_saves_per_event: int = 5
+    # Blur Detection
+    enable_blur_detection: bool = True
+    min_laplacian_variance: float = 250.0
+    blur_kernel_size: int = 3
+    # Motion Integration
+    motion_triggered_detection: bool = True
+    motion_detection_cooldown: float = 1.5
+    # CompreFace Integration
+    enable_compreface: bool = True
+    compreface_url: str = "http://localhost:8000"
+    compreface_api_key: str = ""
+    compreface_subject: str = "unknown"
+    compreface_similarity_threshold: float = 0.88
+    compreface_timeout_ms: int = 8000
+    compreface_max_queue_size: int = 200
+    # Visualization Settings
+    enable_visualization: bool = True
+    draw_landmarks: bool = True
+    draw_confidence: bool = True
+    box_thickness: int = 2
+    font_scale: float = 0.5
+
+
 class WorkerCameraConfig(BaseModel):
     """Configuration for adding a camera to the worker"""
     camera_id: str
@@ -38,6 +98,7 @@ class WorkerCameraConfig(BaseModel):
     enable_display: bool = False  # Disable display in production
     use_nvidia_decoder: bool = True
     motion_detection: Optional[MotionDetectionConfig] = None
+    face_detection: Optional[FaceDetectionConfig] = None
 
 
 class WorkerCameraStatus(BaseModel):
@@ -53,7 +114,8 @@ class WorkerClient:
 
     def __init__(self, base_url: str = "http://localhost:8081"):
         self.base_url = base_url
-        self.timeout = httpx.Timeout(10.0, connect=5.0)
+        # Increased timeout to 120s to allow for TensorRT model compilation on first load
+        self.timeout = httpx.Timeout(120.0, connect=5.0)
 
     async def health_check(self) -> bool:
         """Check if worker is healthy"""

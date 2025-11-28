@@ -149,6 +149,7 @@ struct FaceEvent {
     double timestamp = 0.0;
     int num_faces = 0;
     std::vector<FaceDetection> faces;
+    std::vector<std::string> face_crop_paths;  // Paths to saved face crop images
 
     FaceEvent() = default;
 };

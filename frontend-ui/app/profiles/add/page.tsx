@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, Save, Loader2, Upload, X, Image as ImageIcon, User } from 'lucide-react';
-import { Header } from '@/components/header';
+import { Layout, PageHeader } from '@/components/layout';
 import apiClient from '@/lib/api';
 
 const MAX_IMAGES = 5;
@@ -124,7 +124,7 @@ export default function AddProfilePage() {
           imageFormData.append('subject', formData.compreface_subject_id);
 
           try {
-            await fetch(`http://localhost:8002/api/v1/profiles/${profile.id}/images`, {
+            await fetch(`http://192.168.0.24:8002/api/v1/profiles/${profile.id}/images`, {
               method: 'POST',
               body: imageFormData,
             });
@@ -147,8 +147,8 @@ export default function AddProfilePage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
-      <Header title="Add New Profile" description="Create a new person profile with face images" />
+    <Layout>
+      <PageHeader title="Add New Profile" description="Create a new person profile with face images" />
 
       <main className="container mx-auto px-6 py-8 pb-20 max-w-4xl">
         <div className="mb-6">
@@ -389,6 +389,6 @@ export default function AddProfilePage() {
           </div>
         </form>
       </main>
-    </div>
+    </Layout>
   );
 }

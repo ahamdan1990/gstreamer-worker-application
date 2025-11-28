@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Camera, Activity, AlertCircle, Play, Pause, RefreshCw, Plus, TrendingUp } from 'lucide-react';
-import { Header } from '@/components/header';
+import { Layout, PageHeader } from '@/components/layout';
 import apiClient from '@/lib/api';
 import wsClient from '@/lib/websocket';
 import type { Camera as CameraType, SystemStatus, WebSocketEvent } from '@/lib/types';
@@ -24,7 +24,7 @@ export default function DashboardPage() {
 
     wsClient.connect();
     const unsubscribe = wsClient.subscribe((event) => {
-      console.log('WebSocket event:', event);
+      //console.log('WebSocket event:', event);
       setEvents(prev => [event, ...prev].slice(0, 10));
 
       // Handle camera state updates
@@ -78,9 +78,11 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <RefreshCw className="h-8 w-8 animate-spin text-primary" />
-      </div>
+      <Layout wsConnected={wsConnected}>
+        <div className="flex items-center justify-center min-h-screen">
+          <RefreshCw className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      </Layout>
     );
   }
 
@@ -88,12 +90,16 @@ export default function DashboardPage() {
   const errorCameras = cameras.filter(c => c.state === 'ERROR').length;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
-      <Header
+    <Layout wsConnected={wsConnected}>
+      <PageHeader
         title="Dashboard"
         description="Real-time monitoring and control"
-        wsConnected={wsConnected}
-        onRefresh={loadData}
+        action={
+          <Button onClick={loadData} variant="outline" size="sm">
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Refresh
+          </Button>
+        }
       />
 
       <main className="container mx-auto px-6 py-8">
@@ -232,6 +238,6 @@ export default function DashboardPage() {
           </Card>
         )}
       </main>
-    </div>
+    </Layout>
   );
 }

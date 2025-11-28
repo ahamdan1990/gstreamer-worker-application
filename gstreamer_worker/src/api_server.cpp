@@ -252,7 +252,88 @@ void APIServer::setup_routes() {
                 }
             }
 
+            // Parse face detection configuration
+            if (body.contains("face_detection")) {
+                auto fd = body["face_detection"];
+                config.face_detection.enabled = fd.value("enabled", false);
+
+                if (config.face_detection.enabled) {
+                    // Model Configuration
+                    if (fd.contains("model_path")) config.face_detection.model_path = fd["model_path"];
+                    if (fd.contains("input_size")) config.face_detection.input_size = fd["input_size"];
+                    if (fd.contains("confidence_threshold")) config.face_detection.confidence_threshold = fd["confidence_threshold"];
+                    if (fd.contains("nms_threshold")) config.face_detection.nms_threshold = fd["nms_threshold"];
+
+                    // Frame Processing
+                    if (fd.contains("frame_skip")) config.face_detection.frame_skip = fd["frame_skip"];
+                    if (fd.contains("max_frame_width")) config.face_detection.max_frame_width = fd["max_frame_width"];
+                    if (fd.contains("max_frame_height")) config.face_detection.max_frame_height = fd["max_frame_height"];
+
+                    // Face Detection Parameters
+                    if (fd.contains("min_face_size")) config.face_detection.min_face_size = fd["min_face_size"];
+                    if (fd.contains("max_faces")) config.face_detection.max_faces = fd["max_faces"];
+                    if (fd.contains("required_frames")) config.face_detection.required_frames = fd["required_frames"];
+                    if (fd.contains("cooldown_seconds")) config.face_detection.cooldown_seconds = fd["cooldown_seconds"];
+
+                    // Face Quality Filtering (NEW - 9 parameters)
+                    if (fd.contains("enable_frontal_face_filter")) config.face_detection.enable_frontal_face_filter = fd["enable_frontal_face_filter"];
+                    if (fd.contains("eye_tilt_threshold")) config.face_detection.eye_tilt_threshold = fd["eye_tilt_threshold"];
+                    if (fd.contains("min_eye_distance")) config.face_detection.min_eye_distance = fd["min_eye_distance"];
+                    if (fd.contains("nose_center_offset_threshold")) config.face_detection.nose_center_offset_threshold = fd["nose_center_offset_threshold"];
+                    if (fd.contains("eye_to_face_ratio_min")) config.face_detection.eye_to_face_ratio_min = fd["eye_to_face_ratio_min"];
+                    if (fd.contains("eye_to_face_ratio_max")) config.face_detection.eye_to_face_ratio_max = fd["eye_to_face_ratio_max"];
+                    if (fd.contains("enable_min_face_size_filter")) config.face_detection.enable_min_face_size_filter = fd["enable_min_face_size_filter"];
+                    if (fd.contains("min_face_width")) config.face_detection.min_face_width = fd["min_face_width"];
+                    if (fd.contains("min_face_height")) config.face_detection.min_face_height = fd["min_face_height"];
+
+                    // TensorRT/CUDA Settings
+                    if (fd.contains("use_tensorrt")) config.face_detection.use_tensorrt = fd["use_tensorrt"];
+                    if (fd.contains("use_cuda")) config.face_detection.use_cuda = fd["use_cuda"];
+                    if (fd.contains("max_batch_size")) config.face_detection.max_batch_size = fd["max_batch_size"];
+
+                    // Face Saving Configuration
+                    if (fd.contains("save_faces")) config.face_detection.save_faces = fd["save_faces"];
+                    if (fd.contains("save_path")) config.face_detection.save_path = fd["save_path"];
+                    if (fd.contains("save_margin")) config.face_detection.save_margin = fd["save_margin"];
+                    if (fd.contains("min_save_confidence")) config.face_detection.min_save_confidence = fd["min_save_confidence"];
+                    if (fd.contains("max_saves_per_event")) config.face_detection.max_saves_per_event = fd["max_saves_per_event"];
+
+                    // Blur Detection
+                    if (fd.contains("enable_blur_detection")) config.face_detection.enable_blur_detection = fd["enable_blur_detection"];
+                    if (fd.contains("min_laplacian_variance")) config.face_detection.min_laplacian_variance = fd["min_laplacian_variance"];
+                    if (fd.contains("blur_kernel_size")) config.face_detection.blur_kernel_size = fd["blur_kernel_size"];
+
+                    // Motion Integration
+                    if (fd.contains("motion_triggered_detection")) config.face_detection.motion_triggered_detection = fd["motion_triggered_detection"];
+                    if (fd.contains("motion_detection_cooldown")) config.face_detection.motion_detection_cooldown = fd["motion_detection_cooldown"];
+
+                    // CompreFace Integration
+                    if (fd.contains("enable_compreface")) config.face_detection.enable_compreface = fd["enable_compreface"];
+                    if (fd.contains("compreface_url")) config.face_detection.compreface_url = fd["compreface_url"];
+                    if (fd.contains("compreface_api_key")) config.face_detection.compreface_api_key = fd["compreface_api_key"];
+                    if (fd.contains("compreface_subject")) config.face_detection.compreface_subject = fd["compreface_subject"];
+                    if (fd.contains("compreface_timeout_ms")) config.face_detection.compreface_timeout_ms = fd["compreface_timeout_ms"];
+                    if (fd.contains("compreface_max_queue_size")) config.face_detection.compreface_max_queue_size = fd["compreface_max_queue_size"];
+
+                    // Visualization Settings
+                    if (fd.contains("enable_visualization")) config.face_detection.enable_visualization = fd["enable_visualization"];
+                    if (fd.contains("draw_landmarks")) config.face_detection.draw_landmarks = fd["draw_landmarks"];
+                    if (fd.contains("draw_confidence")) config.face_detection.draw_confidence = fd["draw_confidence"];
+                    if (fd.contains("box_thickness")) config.face_detection.box_thickness = fd["box_thickness"];
+                    if (fd.contains("font_scale")) config.face_detection.font_scale = fd["font_scale"];
+                }
+            }
+
             bool success = manager_->add_camera(config);
+
+            if (success) {
+                LOG_INFO(log_tag_, "✓ Camera added: " + config.camera_id +
+                         " (RTSP: " + config.rtsp_url + ")" +
+                         (config.motion_detection.enabled ? " [Motion Detection ENABLED]" : "") +
+                         (config.face_detection.enabled ? " [Face Detection ENABLED]" : ""));
+            } else {
+                LOG_ERROR(log_tag_, "✗ Failed to add camera: " + config.camera_id);
+            }
 
             json response = {
                 {"success", success},
@@ -284,6 +365,12 @@ void APIServer::setup_routes() {
             }
 
             bool success = camera->start();
+
+            if (success) {
+                LOG_INFO(log_tag_, "✓ Camera starting: " + camera_id);
+            } else {
+                LOG_ERROR(log_tag_, "✗ Failed to start camera: " + camera_id);
+            }
 
             json response = {
                 {"success", success},

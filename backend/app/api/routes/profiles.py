@@ -15,6 +15,7 @@ from app.db.base import get_db
 from app.models.profile import Profile
 from app.models.person_event import PersonEvent
 from app.core.config import settings
+from app.services.compreface_service import CompreFaceService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ async def get_profile(
         .options(joinedload(Profile.watchlists))
         .where(Profile.id == profile_id)
     )
-    profile = result.scalar_one_or_none()
+    profile = result.unique().scalar_one_or_none()
     
     if not profile:
         raise HTTPException(
@@ -396,12 +397,14 @@ async def sync_compreface_subjects(
         # Fetch all subjects from CompreFace
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{settings.COMPREFACE_URL}/api/v1/recognition/subjects",
+                f"{settings.COMPREFACE_URL}/api/v1/recognition/subjects/",
                 headers={"x-api-key": settings.COMPREFACE_API_KEY},
                 timeout=30.0
             )
             response.raise_for_status()
             data = response.json()
+
+            # Get subjects list from response
             compreface_subjects = data.get("subjects", [])
 
         if not compreface_subjects:
@@ -484,4 +487,100 @@ async def sync_compreface_subjects(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to sync CompreFace subjects: {str(e)}"
+        )
+
+
+@router.get("/{profile_id}/compreface-images", response_model=dict)
+async def get_profile_compreface_images(
+    profile_id: UUID,
+    page: int = 0,
+    size: int = 20,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Fetch reference images for a profile from CompreFace.
+
+    Returns the subject's saved face examples from CompreFace with image URLs.
+
+    Args:
+        profile_id: Profile UUID
+        page: Page number (default: 0)
+        size: Images per page (default: 20)
+
+    Returns:
+        {
+            "images": [{"image_id": "...", "image_url": "..."}],
+            "total": int,
+            "page": int,
+            "page_size": int,
+            "total_pages": int
+        }
+    """
+    # Get profile
+    result = await db.execute(
+        select(Profile).where(Profile.id == profile_id)
+    )
+    profile = result.scalar_one_or_none()
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Profile not found"
+        )
+
+    if not profile.compreface_subject_id:
+        return {
+            "images": [],
+            "total": 0,
+            "page": page,
+            "page_size": size,
+            "total_pages": 0
+        }
+
+    try:
+        # Initialize CompreFace service
+        compreface = CompreFaceService(
+            base_url=settings.COMPREFACE_URL,
+            api_key=settings.COMPREFACE_API_KEY
+        )
+
+        # Fetch images from CompreFace
+        response = await compreface.get_subject_images(
+            subject=profile.compreface_subject_id,
+            page=page,
+            size=size
+        )
+
+        if not response:
+            return {
+                "images": [],
+                "total": 0,
+                "page": page,
+                "page_size": size,
+                "total_pages": 0
+            }
+
+        # Build image list with direct URLs
+        images = [
+            {
+                "image_id": face.image_id,
+                "subject": face.subject,
+                "image_url": compreface.get_image_url(face.image_id)
+            }
+            for face in response.faces
+        ]
+
+        return {
+            "images": images,
+            "total": response.total_elements,
+            "page": response.page_number,
+            "page_size": response.page_size,
+            "total_pages": response.total_pages
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to fetch CompreFace images for profile {profile_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch CompreFace images: {str(e)}"
         )

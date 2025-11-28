@@ -13,7 +13,8 @@ import {
   Shield,
   Webhook,
   Activity,
-  LayoutDashboard
+  LayoutDashboard,
+  ScrollText
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -29,6 +30,7 @@ const navItems = [
   { href: '/profiles', label: 'Profiles', icon: Users },
   { href: '/watchlists', label: 'Watchlists', icon: Shield },
   { href: '/events', label: 'Events', icon: Activity },
+  { href: '/logs', label: 'Logs', icon: ScrollText },
   { href: '/webhooks', label: 'Webhooks', icon: Webhook },
 ];
 

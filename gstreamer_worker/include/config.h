@@ -102,6 +102,17 @@ struct FaceDetectionConfig {
     float min_laplacian_variance = 100.0f;           // Minimum Laplacian variance (higher = sharper)
     int blur_kernel_size = 3;                        // Kernel size for blur detection
 
+    // Face quality filtering (frontal face and size filters - NEW)
+    bool enable_frontal_face_filter = true;          // Filter out non-frontal faces using landmarks
+    float eye_tilt_threshold = 0.3f;                 // Max eye tilt angle (radians) for frontal faces
+    float min_eye_distance = 0.01f;                  // Min normalized eye distance (relative to face width)
+    float nose_center_offset_threshold = 0.3f;       // Max nose offset from face center (relative)
+    float eye_to_face_ratio_min = 0.25f;             // Min eye distance to face width ratio
+    float eye_to_face_ratio_max = 0.65f;             // Max eye distance to face width ratio
+    bool enable_min_face_size_filter = true;         // Enable minimum face size filtering
+    int min_face_width = 80;                         // Minimum face width in pixels
+    int min_face_height = 80;                        // Minimum face height in pixels
+
     // Motion-triggered face detection (performance optimization)
     bool motion_triggered_detection = true;          // Only detect faces when motion is detected
     float motion_detection_cooldown = 2.0f;          // Continue detecting for N seconds after motion stops
@@ -111,6 +122,7 @@ struct FaceDetectionConfig {
     std::string compreface_url = "http://localhost:8000";  // CompreFace API URL
     std::string compreface_api_key = "";             // CompreFace API key
     std::string compreface_subject = "unknown";      // Default subject name
+    float compreface_similarity_threshold = 0.88f;   // Minimum similarity for match (0.0-1.0, default 0.88 = 88%)
     int compreface_timeout_ms = 5000;                // HTTP request timeout
     int compreface_max_queue_size = 100;             // Max faces in recognition queue
 

@@ -19,7 +19,7 @@ import {
   Activity,
   TrendingUp,
 } from 'lucide-react';
-import { Header } from '@/components/header';
+import { Layout } from '@/components/layout';
 import apiClient from '@/lib/api';
 import wsClient from '@/lib/websocket';
 import type { PersonEvent, Camera as CameraType } from '@/lib/types';
@@ -137,8 +137,7 @@ export default function EventsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Header />
+    <Layout wsConnected={wsConnected}>
       <div className="container mx-auto py-8 px-4">
         {/* Page Header */}
         <div className="flex items-center justify-between mb-6">
@@ -286,21 +285,51 @@ export default function EventsPage() {
           </Card>
         ) : (
           <div className="space-y-4">
-            {filteredEvents.map((event) => (
+            {filteredEvents.map((event) => {
+              // Clean up image URL: remove ./ prefix and ensure it starts with /
+              const cleanImageUrl = event.image_url ? event.image_url.replace(/^\.\//, '/').replace(/^(?!\/)/, '/') : null;
+
+              return (
               <Card key={event.id} className="hover:shadow-md transition-shadow">
                 <CardContent className="pt-6">
                   <div className="flex items-start gap-4">
-                    {/* Event Icon */}
+                    {/* Face Crop Image or Event Icon */}
                     <div className="flex-shrink-0">
-                      <div
-                        className={`w-12 h-12 rounded-full flex items-center justify-center ${
-                          event.is_new_person
-                            ? 'bg-purple-100 text-purple-600'
-                            : 'bg-blue-100 text-blue-600'
-                        }`}
-                      >
-                        <User className="h-6 w-6" />
-                      </div>
+                      {cleanImageUrl ? (
+                        <div className="w-20 h-20 rounded-lg overflow-hidden border-2 border-gray-200 bg-gray-50">
+                          <img
+                            src={`http://192.168.0.24:8002${cleanImageUrl}`}
+                            alt={`Face crop for ${event.subject}`}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              // Fallback to icon if image fails to load
+                              const target = e.currentTarget as HTMLImageElement;
+                              target.style.display = 'none';
+                              const parent = target.parentElement;
+                              if (parent) {
+                                const fallbackDiv = document.createElement('div');
+                                fallbackDiv.className = `w-20 h-20 rounded-lg flex items-center justify-center ${
+                                  event.is_new_person
+                                    ? 'bg-purple-100 text-purple-600'
+                                    : 'bg-blue-100 text-blue-600'
+                                }`;
+                                fallbackDiv.innerHTML = '<svg class="h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>';
+                                parent.appendChild(fallbackDiv);
+                              }
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <div
+                          className={`w-20 h-20 rounded-lg flex items-center justify-center ${
+                            event.is_new_person
+                              ? 'bg-purple-100 text-purple-600'
+                              : 'bg-blue-100 text-blue-600'
+                          }`}
+                        >
+                          <User className="h-10 w-10" />
+                        </div>
+                      )}
                     </div>
 
                     {/* Event Details */}
@@ -401,10 +430,11 @@ export default function EventsPage() {
                   </div>
                 </CardContent>
               </Card>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
-    </div>
+    </Layout>
   );
 }

@@ -185,9 +185,9 @@ void EventBroadcaster::emit_motion_detected(
         {"confidence", confidence}
     };
 
-    emit_event("motion_detected", data, camera_id);
-    LOG_INFO(log_tag_, "Motion detected event emitted: " + camera_id +
-             " (area=" + std::to_string(motion_area) + "px, confidence=" + std::to_string(confidence) + ")");
+    //emit_event("motion_detected", data, camera_id);
+    // LOG_INFO(log_tag_, "Motion detected event emitted: " + camera_id +
+    //          " (area=" + std::to_string(motion_area) + "px, confidence=" + std::to_string(confidence) + ")");
 }
 
 void EventBroadcaster::emit_fps_drop(
@@ -253,7 +253,8 @@ void EventBroadcaster::emit_person_recognized(const PersonRecognitionEvent& even
         {"is_new_at_camera", event.is_new_at_camera},
         {"dwell_time_seconds", event.dwell_time_seconds},
         {"other_cameras", other_cameras},
-        {"event_time", event_time}
+        {"event_time", event_time},
+        {"image_url", event.face_crop_path}
     };
 
     emit_event("person_recognized", data, event.camera_id);
@@ -264,7 +265,8 @@ void EventBroadcaster::emit_person_recognized(const PersonRecognitionEvent& even
 void EventBroadcaster::emit_face_detected(
     const std::string& camera_id,
     float confidence,
-    int detection_count
+    int detection_count,
+    const std::vector<std::string>& face_crop_paths
 ) {
     json data = {
         {"confidence", confidence},
@@ -272,9 +274,33 @@ void EventBroadcaster::emit_face_detected(
         {"subject", "unknown"}
     };
 
+    // Add face crop paths if available
+    if (!face_crop_paths.empty()) {
+        // For simplicity, just use the first face crop path as image_url
+        // You could also send all paths as an array if needed
+        data["image_url"] = face_crop_paths[0];
+        data["all_images"] = face_crop_paths;
+    }
+
     emit_event("face_detected", data, camera_id);
     LOG_INFO(log_tag_, "Face detected event emitted: " + camera_id +
              " (confidence: " + std::to_string(confidence) + ")");
+}
+
+void EventBroadcaster::emit_log(
+    const std::string& level,
+    const std::string& component,
+    const std::string& message,
+    const std::string& camera_id
+) {
+    json data = {
+        {"level", level},
+        {"component", component},
+        {"message", message}
+    };
+
+    emit_event("log", data, camera_id);
+    // Don't log this event itself to avoid recursion
 }
 
 bool EventBroadcaster::is_connected() const {

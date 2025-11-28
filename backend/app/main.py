@@ -4,6 +4,8 @@ FastAPI Main Application - Camera Management System MVP
 from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from sqlalchemy import select
 import logging
@@ -13,6 +15,7 @@ import time
 import os
 from pathlib import Path
 from datetime import datetime
+import traceback
 
 from app.core.config import settings
 from app.db.base import get_db
@@ -77,7 +80,7 @@ async def start_worker_process():
         # Start worker with FastAPI URL for callback
         fastapi_url = f"http://{settings.API_HOST}:{settings.API_PORT}"
         if settings.API_HOST == "0.0.0.0":
-            fastapi_url = f"http://localhost:{settings.API_PORT}"
+            fastapi_url = f"http://192.168.0.24:{settings.API_PORT}"
 
         worker_process = subprocess.Popen(
             [
@@ -92,6 +95,21 @@ async def start_worker_process():
         )
 
         logger.info(f"Worker process started with PID: {worker_process.pid}")
+
+        # Start background thread to read worker output
+        def read_worker_output():
+            """Read and log worker stdout in background"""
+            try:
+                for line in iter(worker_process.stdout.readline, ''):
+                    if line:
+                        # Log worker output with [WORKER] prefix
+                        logger.info(f"[WORKER] {line.rstrip()}")
+            except Exception as e:
+                logger.error(f"Error reading worker output: {e}")
+
+        import threading
+        output_thread = threading.Thread(target=read_worker_output, daemon=True)
+        output_thread.start()
 
         # Wait for worker to become healthy (with timeout)
         max_wait = 10  # seconds
@@ -257,6 +275,12 @@ async def sync_cameras_to_worker():
                             from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
                             motion_config = WorkerMotionConfig(**camera.motion_detection_config)
 
+                        # Build face detection config if enabled
+                        face_config = None
+                        if camera.face_detection_enabled and camera.face_detection_config:
+                            from app.services.worker_client import FaceDetectionConfig as WorkerFaceConfig
+                            face_config = WorkerFaceConfig(**camera.face_detection_config)
+
                         worker_config = WorkerCameraConfig(
                             camera_id=camera.camera_id,
                             rtsp_url=camera.rtsp_url,
@@ -267,7 +291,8 @@ async def sync_cameras_to_worker():
                             target_fps=camera.target_fps,
                             enable_display=camera.enable_display,
                             use_nvidia_decoder=camera.use_nvidia_decoder,
-                            motion_detection=motion_config
+                            motion_detection=motion_config,
+                            face_detection=face_config
                         )
                         # Use add_or_update for idempotent operation
                         await worker.add_or_update_camera(worker_config)
@@ -282,7 +307,10 @@ async def sync_cameras_to_worker():
                             await worker.start_camera(camera.camera_id)
                             started_count += 1
                     except Exception as e:
-                        logger.error(f"Failed to sync camera {camera.camera_id}: {e}")
+                        logger.error(f"Failed to sync camera {camera.camera_id}: {e}", exc_info=True)
+                        # Try to extract more details from HTTP errors
+                        if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                            logger.error(f"Worker response: {e.response.text}")
 
                 break  # Only need one db session
 
@@ -374,6 +402,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+# Global exception handler to log all errors
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch all exceptions and log full traceback"""
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}")
+    logger.error(f"Exception type: {type(exc).__name__}")
+    logger.error(f"Exception message: {str(exc)}")
+    logger.error(f"Full traceback:\n{''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))}")
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "error": str(exc)}
+    )
+
 # Request logging middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -404,6 +447,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files for face crop images
+face_crops_dir = Path(__file__).parent.parent / "face_crops"
+face_crops_dir.mkdir(exist_ok=True)  # Create directory if it doesn't exist
+app.mount("/face_crops", StaticFiles(directory=str(face_crops_dir)), name="face_crops")
 
 # Health check endpoint
 @app.get("/health")

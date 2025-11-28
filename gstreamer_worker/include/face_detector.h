@@ -333,7 +333,7 @@ private:
      * Saves faces to: {save_path}/{camera_id}_{timestamp}_{face_num}_{confidence}.jpg
      * Format is compatible with CompreFace face recognition system
      */
-    void save_face_crops(
+    std::vector<std::string> save_face_crops(
         const cv::cuda::GpuMat& frame,
         const std::vector<FaceDetection>& detections,
         double event_timestamp

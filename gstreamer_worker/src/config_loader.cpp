@@ -456,6 +456,9 @@ bool ConfigLoader::load_from_string(
                     if (face_json.contains("compreface_subject")) {
                         cam.face_detection.compreface_subject = face_json["compreface_subject"].get<std::string>();
                     }
+                    if (face_json.contains("compreface_similarity_threshold")) {
+                        cam.face_detection.compreface_similarity_threshold = face_json["compreface_similarity_threshold"].get<float>();
+                    }
                     if (face_json.contains("compreface_timeout_ms")) {
                         cam.face_detection.compreface_timeout_ms = face_json["compreface_timeout_ms"].get<int>();
                     }

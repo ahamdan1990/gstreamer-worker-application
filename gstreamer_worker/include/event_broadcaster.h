@@ -181,11 +181,27 @@ public:
      * @param camera_id Camera identifier
      * @param confidence Detection confidence
      * @param detection_count Number of detections
+     * @param face_crop_paths Paths to saved face crop images
      */
     void emit_face_detected(
         const std::string& camera_id,
         float confidence,
-        int detection_count
+        int detection_count,
+        const std::vector<std::string>& face_crop_paths = {}
+    );
+
+    /**
+     * @brief Emit log message for real-time monitoring
+     * @param level Log level (DEBUG, INFO, WARNING, ERROR)
+     * @param component Component name (e.g., "FaceDetector", "CameraStream")
+     * @param message Log message
+     * @param camera_id Optional camera ID
+     */
+    void emit_log(
+        const std::string& level,
+        const std::string& component,
+        const std::string& message,
+        const std::string& camera_id = ""
     );
 
     /**

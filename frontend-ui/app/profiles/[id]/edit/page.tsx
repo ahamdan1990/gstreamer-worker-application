@@ -20,7 +20,7 @@ import {
   RefreshCw,
   Trash2,
 } from 'lucide-react';
-import { Header } from '@/components/header';
+import { Layout, PageHeader } from '@/components/layout';
 import apiClient from '@/lib/api';
 import type { Profile } from '@/lib/types';
 
@@ -168,7 +168,7 @@ export default function EditProfilePage() {
         try {
           // Extract image ID from URL if needed
           const imageId = imageUrl.split('/').pop() || '';
-          await fetch(`http://localhost:8002/api/v1/profiles/${profileId}/images/${imageId}`, {
+          await fetch(`http://192.168.0.24:8002/api/v1/profiles/${profileId}/images/${imageId}`, {
             method: 'DELETE',
           });
         } catch (error) {
@@ -184,7 +184,7 @@ export default function EditProfilePage() {
           imageFormData.append('subject', profile.compreface_subject_id);
 
           try {
-            await fetch(`http://localhost:8002/api/v1/profiles/${profileId}/images`, {
+            await fetch(`http://192.168.0.24:8002/api/v1/profiles/${profileId}/images`, {
               method: 'POST',
               body: imageFormData,
             });
@@ -208,17 +208,19 @@ export default function EditProfilePage() {
 
   if (loading || !profile) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <RefreshCw className="h-8 w-8 animate-spin text-primary" />
-      </div>
+      <Layout>
+        <div className="flex items-center justify-center min-h-screen">
+          <RefreshCw className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      </Layout>
     );
   }
 
   const totalImages = existingImages.length - imagesToDelete.length + newImages.length;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
-      <Header title={`Edit ${profile.name}`} description="Update profile information and images" />
+    <Layout>
+      <PageHeader title={`Edit ${profile.name}`} description="Update profile information and images" />
 
       <main className="container mx-auto px-6 py-8 pb-20 max-w-4xl">
         <div className="mb-6">
@@ -501,6 +503,6 @@ export default function EditProfilePage() {
           </div>
         </form>
       </main>
-    </div>
+    </Layout>
   );
 }

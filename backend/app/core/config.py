@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+    CORS_ORIGINS: List[str] = ["http://192.168.0.24:3000","*"]
 
     @validator("CORS_ORIGINS", pre=True)
     def assemble_cors_origins(cls, v):
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     WORKER_PORT: int = 8081
     WORKER_WS_PORT: int = 8082  # WebSocket on separate port for production
     WORKER_API_URL: str = "http://localhost:8081"
-    WORKER_WS_URL: str = "ws://localhost:8082/ws"
+    WORKER_WS_URL: str = "ws://192.168.0.24:8082/ws"
     WORKER_EXECUTABLE: str = "../gstreamer_worker/build/gstreamer_worker_api"
     WORKER_AUTO_START: bool = True
     WORKER_AUTO_RESTART: bool = True

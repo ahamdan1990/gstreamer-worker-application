@@ -22,7 +22,7 @@ import {
   Image as ImageIcon,
   RefreshCw,
 } from 'lucide-react';
-import { Header } from '@/components/header';
+import { Layout } from '@/components/layout';
 import apiClient from '@/lib/api';
 import type { Profile, PersonEvent } from '@/lib/types';
 
@@ -57,7 +57,7 @@ export default function ProfileDetailPage() {
   const loadRecentEvents = async () => {
     try {
       const response = await fetch(
-        `http://localhost:8002/api/v1/events/persons?profile_id=${profileId}&limit=10`
+        `http://192.168.0.24:8002/api/v1/events/persons?profile_id=${profileId}&limit=10`
       );
       if (response.ok) {
         const data = await response.json();
@@ -119,16 +119,16 @@ export default function ProfileDetailPage() {
 
   if (loading || !profile) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <RefreshCw className="h-8 w-8 animate-spin text-primary" />
-      </div>
+      <Layout>
+        <div className="flex items-center justify-center min-h-screen">
+          <RefreshCw className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      </Layout>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-      <Header />
-
+    <Layout>
       <main className="container mx-auto px-4 py-8">
         <div className="mb-6">
           <Link href="/profiles">
@@ -443,6 +443,6 @@ export default function ProfileDetailPage() {
           </div>
         </div>
       </main>
-    </div>
+    </Layout>
   );
 }

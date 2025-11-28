@@ -20,7 +20,7 @@ import {
   Activity,
   AlertTriangle,
 } from 'lucide-react';
-import { Header } from '@/components/header';
+import { Layout } from '@/components/layout';
 import apiClient from '@/lib/api';
 import type { Watchlist } from '@/lib/types';
 
@@ -98,8 +98,7 @@ export default function WatchlistsPage() {
   const watchlistsWithAlerts = watchlists.filter((w) => w.enable_alerts).length;
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Header />
+    <Layout>
       <div className="container mx-auto py-8 px-4">
         {/* Page Header */}
         <div className="flex items-center justify-between mb-6">
@@ -353,6 +352,6 @@ export default function WatchlistsPage() {
           </div>
         )}
       </div>
-    </div>
+    </Layout>
   );
 }

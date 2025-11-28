@@ -71,7 +71,8 @@ PersonTracker::~PersonTracker() {
 void PersonTracker::update_person(
     const std::string& camera_id,
     const RecognitionResult& result,
-    const FaceDetection& detection
+    const FaceDetection& detection,
+    const std::string& face_crop_path
 ) {
     if (result.subject == "unknown" || !result.is_match) {
         return;  // Only track recognized persons
@@ -144,6 +145,7 @@ void PersonTracker::update_person(
         event.is_new_at_camera = is_new_at_camera;
         event.dwell_time_seconds = appearance.dwell_time_seconds();
         event.other_cameras = presence.get_camera_list();
+        event.face_crop_path = face_crop_path;
 
         // Remove current camera from other_cameras list
         event.other_cameras.erase(

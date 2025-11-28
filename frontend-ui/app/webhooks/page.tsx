@@ -21,7 +21,7 @@ import {
   AlertTriangle,
   TrendingUp,
 } from 'lucide-react';
-import { Header } from '@/components/header';
+import { Layout } from '@/components/layout';
 import apiClient from '@/lib/api';
 import type { Webhook } from '@/lib/types';
 
@@ -122,8 +122,7 @@ export default function WebhooksPage() {
   const successRate = totalCalls > 0 ? ((totalSuccess / totalCalls) * 100).toFixed(1) : '0.0';
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Header />
+    <Layout>
       <div className="container mx-auto py-8 px-4">
         {/* Page Header */}
         <div className="flex items-center justify-between mb-6">
@@ -451,6 +450,6 @@ export default function WebhooksPage() {
           </div>
         )}
       </div>
-    </div>
+    </Layout>
   );
 }

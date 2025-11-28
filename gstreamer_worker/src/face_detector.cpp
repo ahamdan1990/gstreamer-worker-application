@@ -54,6 +54,7 @@ FaceDetector::FaceDetector(
             CompreFaceConfig cf_config;
             cf_config.base_url = config_.compreface_url;
             cf_config.api_key = config_.compreface_api_key;
+            cf_config.similarity_threshold = config_.compreface_similarity_threshold;
             cf_config.timeout_ms = config_.compreface_timeout_ms;
             cf_config.max_queue_size = config_.compreface_max_queue_size;
 
@@ -288,7 +289,7 @@ bool FaceDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
             }
 
             // Save face crops for verification and CompreFace integration (only NEW faces)
-            save_face_crops(d_frame, new_face_detections, event.timestamp);
+            event.face_crop_paths = save_face_crops(d_frame, new_face_detections, event.timestamp);
 
             // Trigger callback
             if (on_face_) {
@@ -790,13 +791,15 @@ cv::cuda::GpuMat FaceDetector::apply_roi_cuda(const cv::cuda::GpuMat& d_frame) c
     return d_frame(cv::Rect(x, y, w, h));
 }
 
-void FaceDetector::save_face_crops(
+std::vector<std::string> FaceDetector::save_face_crops(
     const cv::cuda::GpuMat& d_frame,
     const std::vector<FaceDetection>& detections,
     double event_timestamp
 ) {
+    std::vector<std::string> saved_paths;
+
     if (!config_.save_faces || detections.empty()) {
-        return;
+        return saved_paths;
     }
 
     // Create save directory if it doesn't exist
@@ -921,17 +924,18 @@ void FaceDetector::save_face_crops(
             continue;
         }
 
-        // Check minimum face size in pixels (CompreFace needs at least 80x80)
-        const int MIN_FACE_WIDTH = 80;
-        const int MIN_FACE_HEIGHT = 80;
-        if (pw < MIN_FACE_WIDTH || ph < MIN_FACE_HEIGHT) {
-            std::cout << "[FaceDetector:" << camera_id_ << "] Skipping small face ("
-                      << pw << "x" << ph << " pixels) - too small for CompreFace (needs 80x80+)" << std::endl;
-            continue;
+        // Check minimum face size in pixels - only if enabled
+        if (config_.enable_min_face_size_filter) {
+            if (pw < config_.min_face_width || ph < config_.min_face_height) {
+                std::cout << "[FaceDetector:" << camera_id_ << "] Skipping small face ("
+                          << pw << "x" << ph << " pixels) - minimum required: "
+                          << config_.min_face_width << "x" << config_.min_face_height << std::endl;
+                continue;
+            }
         }
 
-        // Check if face is frontal (not profile/partial/back-of-head)
-        if (!is_frontal_face(detection)) {
+        // Check if face is frontal (not profile/partial/back-of-head) - only if enabled
+        if (config_.enable_frontal_face_filter && !is_frontal_face(detection)) {
             // Skip non-frontal faces - only save frontal faces for recognition
             std::cout << "[FaceDetector:" << camera_id_ << "] Skipping non-frontal face (profile/partial/turning)" << std::endl;
             continue;
@@ -978,6 +982,7 @@ void FaceDetector::save_face_crops(
                       << static_cast<int>(detection.confidence * 100) << "% confidence)"
                       << std::endl;
             saved_count++;
+            saved_paths.push_back(filename.str());  // Add to saved paths vector
 
             // Send to CompreFace for recognition
             if (compreface_client_ && config_.enable_compreface) {
@@ -1021,6 +1026,8 @@ void FaceDetector::save_face_crops(
                       << e.what() << std::endl;
         }
     }
+
+    return saved_paths;
 }
 
 std::vector<FaceDetection> FaceDetector::filter_tracked_faces(
@@ -1173,16 +1180,16 @@ bool FaceDetector::is_frontal_face(const FaceDetection& detection) {
     float right_eye_x = landmarks[1].x;
     float right_eye_y = landmarks[1].y;
 
-    // Eyes should be horizontally aligned (not tilted more than 15 degrees)
+    // Eyes should be horizontally aligned (not tilted more than threshold)
     float eye_y_diff = std::abs(left_eye_y - right_eye_y);
     float eye_distance = std::abs(right_eye_x - left_eye_x);
 
-    if (eye_distance < 0.01) {
+    if (eye_distance < config_.min_eye_distance) {
         return false;  // Eyes too close = profile or bad detection
     }
 
     float eye_tilt_ratio = eye_y_diff / eye_distance;
-    if (eye_tilt_ratio > 0.3) {  // More than ~17 degree tilt
+    if (eye_tilt_ratio > config_.eye_tilt_threshold) {
         return false;
     }
 
@@ -1199,8 +1206,8 @@ bool FaceDetector::is_frontal_face(const FaceDetection& detection) {
     float eye_center_x = (left_eye_x + right_eye_x) / 2.0f;
     float nose_offset = std::abs(nose_x - eye_center_x);
 
-    // Nose should be within 30% of inter-eye distance from center
-    if (nose_offset > eye_distance * 0.3) {
+    // Nose should be within threshold of inter-eye distance from center
+    if (nose_offset > eye_distance * config_.nose_center_offset_threshold) {
         return false;  // Nose too far off-center = profile
     }
 
@@ -1217,11 +1224,11 @@ bool FaceDetector::is_frontal_face(const FaceDetection& detection) {
     }
 
     // 5. Check face width vs inter-eye distance ratio
-    // For frontal faces, inter-eye distance should be roughly 40-50% of face width
+    // For frontal faces, inter-eye distance should be within configured ratio of face width
     float face_width = detection.bbox.width;
     float eye_to_face_ratio = eye_distance / face_width;
 
-    if (eye_to_face_ratio < 0.25 || eye_to_face_ratio > 0.65) {
+    if (eye_to_face_ratio < config_.eye_to_face_ratio_min || eye_to_face_ratio > config_.eye_to_face_ratio_max) {
         return false;  // Unusual ratio = profile or extreme angle
     }
 
@@ -1283,8 +1290,8 @@ void FaceDetector::on_recognition_result(
                 detection.confidence = tracked.recognition_confidence;
                 // Note: landmarks not available here, but not needed for PersonTracker
 
-                // Update person tracking
-                person_tracker_->update_person(camera_id_, recognition, detection);
+                // Update person tracking with face crop path
+                person_tracker_->update_person(camera_id_, recognition, detection, face_crop_path);
             }
 
             // Only update the first unrecognized face

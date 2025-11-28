@@ -21,7 +21,7 @@ import {
   Users,
   RefreshCcw
 } from 'lucide-react';
-import { Header } from '@/components/header';
+import { Layout } from '@/components/layout';
 import apiClient from '@/lib/api';
 import wsClient from '@/lib/websocket';
 import type { Profile, PersonEvent } from '@/lib/types';
@@ -36,6 +36,20 @@ export default function ProfilesPage() {
 
   useEffect(() => {
     loadProfiles();
+
+    // Automatically sync CompreFace subjects on page load (silent)
+    const syncOnLoad = async () => {
+      try {
+        await apiClient.syncComprefaceSubjects();
+        // Reload profiles after sync
+        loadProfiles();
+      } catch (error) {
+        console.log('Background CompreFace sync skipped:', error);
+        // Silent failure - don't disrupt user experience
+      }
+    };
+    syncOnLoad();
+
     const interval = setInterval(() => setWsConnected(wsClient.isConnected()), 1000);
 
     wsClient.connect();
@@ -162,9 +176,7 @@ export default function ProfilesPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-      <Header />
-
+    <Layout>
       <main className="container mx-auto px-4 py-8">
         {/* Header */}
         <div className="flex justify-between items-center mb-8">
@@ -441,6 +453,6 @@ export default function ProfilesPage() {
           </div>
         )}
       </main>
-    </div>
+    </Layout>
   );
 }

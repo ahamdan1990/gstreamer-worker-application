@@ -144,6 +144,10 @@ async def reset_setting(
             "log_level": "INFO",
             "enable_metrics": True,
             "metrics_interval": 30.0
+        },
+        "compreface_recognition": {
+            "similarity_threshold": 0.88,
+            "description": "Minimum similarity score (0.0-1.0) for face recognition match. Higher = stricter matching."
         }
     }
 
@@ -318,4 +322,84 @@ async def update_manager_config(
         "setting_key": "manager",
         "setting_value": setting.setting_value,
         "message": "Manager configuration updated successfully"
+    }
+
+
+# Specific endpoints for CompreFace recognition settings
+
+@router.get("/compreface-recognition/config", response_model=dict)
+async def get_compreface_recognition_config(
+    db: AsyncSession = Depends(get_db)
+):
+    """Get CompreFace recognition configuration"""
+    result = await db.execute(
+        select(GlobalSettings).where(GlobalSettings.setting_key == "compreface_recognition")
+    )
+    setting = result.scalar_one_or_none()
+
+    if not setting:
+        # Auto-create with default value if not found
+        default_config = {
+            "similarity_threshold": 0.88,
+            "description": "Minimum similarity score (0.0-1.0) for face recognition match. Higher = stricter matching."
+        }
+        setting = GlobalSettings(
+            setting_key="compreface_recognition",
+            setting_value=default_config,
+            description="CompreFace face recognition settings"
+        )
+        db.add(setting)
+        await db.commit()
+        await db.refresh(setting)
+
+    return setting.setting_value
+
+
+@router.put("/compreface-recognition/config", response_model=dict)
+async def update_compreface_recognition_config(
+    similarity_threshold: Optional[float] = Form(None),
+    updated_by: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update CompreFace recognition configuration"""
+    result = await db.execute(
+        select(GlobalSettings).where(GlobalSettings.setting_key == "compreface_recognition")
+    )
+    setting = result.scalar_one_or_none()
+
+    if not setting:
+        # Auto-create if not found
+        default_config = {
+            "similarity_threshold": 0.88,
+            "description": "Minimum similarity score (0.0-1.0) for face recognition match. Higher = stricter matching."
+        }
+        setting = GlobalSettings(
+            setting_key="compreface_recognition",
+            setting_value=default_config,
+            description="CompreFace face recognition settings"
+        )
+        db.add(setting)
+
+    # Get current config
+    config = setting.setting_value
+
+    # Validate and update similarity_threshold
+    if similarity_threshold is not None:
+        if similarity_threshold < 0.0 or similarity_threshold > 1.0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="similarity_threshold must be between 0.0 and 1.0"
+            )
+        config["similarity_threshold"] = similarity_threshold
+
+    setting.setting_value = config
+    setting.updated_by = updated_by
+
+    await db.commit()
+    await db.refresh(setting)
+
+    return {
+        "setting_key": "compreface_recognition",
+        "setting_value": setting.setting_value,
+        "message": "CompreFace recognition configuration updated successfully"
     }

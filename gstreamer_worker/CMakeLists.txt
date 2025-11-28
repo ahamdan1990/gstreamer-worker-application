@@ -90,6 +90,32 @@ else()
     message(WARNING "Face detection will not be available")
 endif()
 
+# TensorRT (for native GPU inference - Phase 3 optimization)
+set(TENSORRT_ROOT "/usr/local/TensorRT" CACHE PATH "TensorRT root directory")
+if(NOT EXISTS "${TENSORRT_ROOT}")
+    set(TENSORRT_ROOT "/usr" CACHE PATH "TensorRT root directory" FORCE)
+endif()
+
+set(TENSORRT_INCLUDE_DIRS "${TENSORRT_ROOT}/include")
+set(TENSORRT_LIBRARIES
+    "${TENSORRT_ROOT}/lib/libnvinfer.so"
+    "${TENSORRT_ROOT}/lib/libnvonnxparser.so"
+    "${TENSORRT_ROOT}/lib/libnvinfer_plugin.so"
+)
+
+# Check if TensorRT is available
+if(EXISTS "${TENSORRT_INCLUDE_DIRS}/NvInfer.h")
+    message(STATUS "TensorRT found: ${TENSORRT_ROOT}")
+    message(STATUS "  Include: ${TENSORRT_INCLUDE_DIRS}")
+    message(STATUS "  Libraries: libnvinfer, libnvonnxparser")
+    set(TENSORRT_FOUND TRUE)
+    add_definitions(-DUSE_TENSORRT)
+else()
+    message(WARNING "TensorRT not found at ${TENSORRT_ROOT}")
+    message(WARNING "Falling back to ONNX Runtime with TensorRT EP")
+    set(TENSORRT_FOUND FALSE)
+endif()
+
 # Enable FetchContent for downloading dependencies
 include(FetchContent)
 
@@ -130,6 +156,11 @@ include_directories(
     /usr/local/cuda-12.6/include
 )
 
+# Add TensorRT includes if available
+if(TENSORRT_FOUND)
+    include_directories(${TENSORRT_INCLUDE_DIRS})
+endif()
+
 # Link directories
 link_directories(
     ${GSTREAMER_LIBRARY_DIRS}
@@ -150,6 +181,11 @@ set(SOURCES
     src/websocket_server.cpp
     src/event_broadcaster.cpp
 )
+
+# TensorRT source (only if TensorRT is available)
+if(TENSORRT_FOUND)
+    list(APPEND SOURCES src/tensorrt_engine.cpp)
+endif()
 
 # CUDA kernel files for zero-copy GPU preprocessing
 set(CUDA_SOURCES
@@ -179,6 +215,11 @@ set(HEADERS
     include/cuda_kernels.h
 )
 
+# TensorRT header (only if TensorRT is available)
+if(TENSORRT_FOUND)
+    list(APPEND HEADERS include/tensorrt_engine.h)
+endif()
+
 # Create library
 add_library(gstreamer_worker_lib STATIC ${SOURCES} ${CUDA_SOURCES} ${HEADERS})
 
@@ -200,6 +241,11 @@ target_link_libraries(gstreamer_worker_lib
     ixwebsocket
     cudart
 )
+
+# Link TensorRT if available
+if(TENSORRT_FOUND)
+    target_link_libraries(gstreamer_worker_lib ${TENSORRT_LIBRARIES})
+endif()
 
 # Main executable (single camera)
 add_executable(gstreamer_worker src/main.cpp)

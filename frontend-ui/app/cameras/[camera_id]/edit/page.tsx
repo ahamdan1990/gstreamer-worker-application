@@ -38,7 +38,7 @@ export default function EditCameraPage() {
       // Fetch face detection configuration separately
       let faceDetectionConfig = null;
       try {
-        const fdResponse = await fetch(`http://localhost:8002/api/v1/cameras/${cameraId}/face-detection`);
+        const fdResponse = await fetch(`http://192.168.0.24:8002/api/v1/cameras/${cameraId}/face-detection`);
         if (fdResponse.ok) {
           const fdData = await fdResponse.json();
           faceDetectionConfig = fdData.config || null;
@@ -60,8 +60,8 @@ export default function EditCameraPage() {
         enable_display: data.enable_display,
         use_nvidia_decoder: data.use_nvidia_decoder,
         enabled: data.enabled,
-        motion_detection: data.motion_detection_config ? {
-          ...data.motion_detection_config
+        motion_detection: data.motion_detection ? {
+          ...data.motion_detection
         } : {
           enabled: false,
           algorithm: 'MOG2_CUDA',
@@ -154,7 +154,7 @@ export default function EditCameraPage() {
         faceDetectionFormData.append('enabled', String(formData.face_detection.enabled ?? false));
         faceDetectionFormData.append('config', JSON.stringify(formData.face_detection));
 
-        await fetch(`http://localhost:8002/api/v1/cameras/${cameraId}/face-detection`, {
+        await fetch(`http://192.168.0.24:8002/api/v1/cameras/${cameraId}/face-detection`, {
           method: 'PUT',
           body: faceDetectionFormData,
         });
@@ -836,6 +836,181 @@ export default function EditCameraPage() {
                               }
                             })}
                           />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Face Quality Filtering */}
+                  <div className="border-t pt-4 mt-4">
+                    <h4 className="font-semibold mb-3">Face Quality Filtering</h4>
+                    <div className="space-y-4">
+                      {/* Frontal Face Filter */}
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label htmlFor="fd_enable_frontal_filter">Enable Frontal Face Filter</Label>
+                          <p className="text-xs text-muted-foreground">Filter out non-frontal faces based on landmarks</p>
+                        </div>
+                        <Switch
+                          id="fd_enable_frontal_filter"
+                          checked={formData.face_detection?.enable_frontal_face_filter ?? true}
+                          onCheckedChange={(checked) => setFormData({
+                            ...formData,
+                            face_detection: {
+                              ...(formData.face_detection || {}),
+                              enable_frontal_face_filter: checked
+                            }
+                          })}
+                        />
+                      </div>
+
+                      {/* Eye Tilt and Distance Thresholds */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="fd_eye_tilt">Eye Tilt Threshold</Label>
+                          <Input
+                            id="fd_eye_tilt"
+                            type="number"
+                            step="0.01"
+                            value={formData.face_detection?.eye_tilt_threshold ?? 0.3}
+                            onChange={(e) => setFormData({
+                              ...formData,
+                              face_detection: {
+                                ...(formData.face_detection || {}),
+                                eye_tilt_threshold: parseFloat(e.target.value)
+                              }
+                            })}
+                          />
+                          <p className="text-xs text-muted-foreground">Max tilt ratio (0.3 ≈ 17°)</p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="fd_min_eye_distance">Min Eye Distance</Label>
+                          <Input
+                            id="fd_min_eye_distance"
+                            type="number"
+                            step="0.001"
+                            value={formData.face_detection?.min_eye_distance ?? 0.01}
+                            onChange={(e) => setFormData({
+                              ...formData,
+                              face_detection: {
+                                ...(formData.face_detection || {}),
+                                min_eye_distance: parseFloat(e.target.value)
+                              }
+                            })}
+                          />
+                          <p className="text-xs text-muted-foreground">Minimum relative eye distance</p>
+                        </div>
+                      </div>
+
+                      {/* Nose and Eye-to-Face Ratios */}
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="fd_nose_offset">Nose Center Offset</Label>
+                          <Input
+                            id="fd_nose_offset"
+                            type="number"
+                            step="0.01"
+                            value={formData.face_detection?.nose_center_offset_threshold ?? 0.3}
+                            onChange={(e) => setFormData({
+                              ...formData,
+                              face_detection: {
+                                ...(formData.face_detection || {}),
+                                nose_center_offset_threshold: parseFloat(e.target.value)
+                              }
+                            })}
+                          />
+                          <p className="text-xs text-muted-foreground">Max nose offset ratio</p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="fd_eye_ratio_min">Eye/Face Ratio Min</Label>
+                          <Input
+                            id="fd_eye_ratio_min"
+                            type="number"
+                            step="0.01"
+                            value={formData.face_detection?.eye_to_face_ratio_min ?? 0.25}
+                            onChange={(e) => setFormData({
+                              ...formData,
+                              face_detection: {
+                                ...(formData.face_detection || {}),
+                                eye_to_face_ratio_min: parseFloat(e.target.value)
+                              }
+                            })}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="fd_eye_ratio_max">Eye/Face Ratio Max</Label>
+                          <Input
+                            id="fd_eye_ratio_max"
+                            type="number"
+                            step="0.01"
+                            value={formData.face_detection?.eye_to_face_ratio_max ?? 0.65}
+                            onChange={(e) => setFormData({
+                              ...formData,
+                              face_detection: {
+                                ...(formData.face_detection || {}),
+                                eye_to_face_ratio_max: parseFloat(e.target.value)
+                              }
+                            })}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Minimum Face Size Filter */}
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label htmlFor="fd_enable_min_size_filter">Enable Min Face Size Filter</Label>
+                          <p className="text-xs text-muted-foreground">Filter faces smaller than specified dimensions</p>
+                        </div>
+                        <Switch
+                          id="fd_enable_min_size_filter"
+                          checked={formData.face_detection?.enable_min_face_size_filter ?? true}
+                          onCheckedChange={(checked) => setFormData({
+                            ...formData,
+                            face_detection: {
+                              ...(formData.face_detection || {}),
+                              enable_min_face_size_filter: checked
+                            }
+                          })}
+                        />
+                      </div>
+
+                      {/* Min Face Dimensions */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="fd_min_face_width">Min Face Width (pixels)</Label>
+                          <Input
+                            id="fd_min_face_width"
+                            type="number"
+                            value={formData.face_detection?.min_face_width ?? 80}
+                            onChange={(e) => setFormData({
+                              ...formData,
+                              face_detection: {
+                                ...(formData.face_detection || {}),
+                                min_face_width: parseInt(e.target.value)
+                              }
+                            })}
+                          />
+                          <p className="text-xs text-muted-foreground">Minimum face crop width</p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="fd_min_face_height">Min Face Height (pixels)</Label>
+                          <Input
+                            id="fd_min_face_height"
+                            type="number"
+                            value={formData.face_detection?.min_face_height ?? 80}
+                            onChange={(e) => setFormData({
+                              ...formData,
+                              face_detection: {
+                                ...(formData.face_detection || {}),
+                                min_face_height: parseInt(e.target.value)
+                              }
+                            })}
+                          />
+                          <p className="text-xs text-muted-foreground">Minimum face crop height</p>
                         </div>
                       </div>
                     </div>

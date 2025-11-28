@@ -32,23 +32,95 @@ void signal_handler(int signal) {
 
 // State change callback
 void on_state_changed(const std::string& camera_id, StreamState state) {
-    LOG_INFO("main", "Camera " + camera_id + " state: " + stream_state_to_string(state));
+    std::string state_str = stream_state_to_string(state);
+    LOG_INFO("main", "Camera " + camera_id + " state: " + state_str);
+
+    // Broadcast state change via EventBroadcaster
+    if (g_broadcaster) {
+        g_broadcaster->emit_log("INFO", "CameraStream",
+                               "State changed to " + state_str, camera_id);
+    }
 }
 
 // Error callback
 void on_error(const std::string& camera_id, const std::string& error) {
     LOG_ERROR("main", "Camera " + camera_id + " error: " + error);
+
+    // Broadcast error via EventBroadcaster
+    if (g_broadcaster) {
+        g_broadcaster->emit_log("ERROR", "CameraStream", error, camera_id);
+    }
+}
+
+// Motion detection callback - broadcasts via EventBroadcaster
+void on_motion_detected(const MotionEvent& event) {
+    // Log motion event with details
+    LOG_DEBUG("main", "Motion detected on camera " + event.camera_id +
+             ": area=" + std::to_string(event.motion_area) + "px, " +
+             "contours=" + std::to_string(event.num_contours));
+
+    // Broadcast to WebSocket clients for real-time monitoring
+    if (g_broadcaster) {
+        g_broadcaster->emit_motion_detected(
+            event.camera_id,
+            event.motion_area,
+            event.num_contours,
+            event.confidence
+        );
+
+        // Also send detailed log
+        g_broadcaster->emit_log("DEBUG", "MotionDetector",
+                               "Motion detected: area=" + std::to_string(event.motion_area) +
+                               "px, contours=" + std::to_string(event.num_contours),
+                               event.camera_id);
+    }
+}
+
+// Face detection callback - broadcasts via EventBroadcaster
+void on_face_detected(const FaceEvent& event) {
+    // Log face detection event with detailed information
+    if (event.num_faces > 0) {
+        std::string log_msg = "Face detected: " + std::to_string(event.num_faces) + " face(s), " +
+                             "confidence=" + std::to_string(event.faces[0].confidence * 100.0) + "%, " +
+                             "bbox=[" + std::to_string(static_cast<int>(event.faces[0].bbox.x)) + "," +
+                             std::to_string(static_cast<int>(event.faces[0].bbox.y)) + " " +
+                             std::to_string(static_cast<int>(event.faces[0].bbox.width)) + "x" +
+                             std::to_string(static_cast<int>(event.faces[0].bbox.height)) + "]";
+
+        LOG_INFO("main", "Camera " + event.camera_id + ": " + log_msg);
+
+         // Broadcast to WebSocket clients for real-time monitoring
+        if (g_broadcaster) {
+            g_broadcaster->emit_face_detected(
+                event.camera_id,
+                event.faces[0].confidence,
+                event.num_faces,
+                event.face_crop_paths
+            );
+
+            // Also send detailed log with bounding box info
+            g_broadcaster->emit_log("INFO", "FaceDetector", log_msg, event.camera_id);
+        }
+    }
 }
 
 // Person recognition callback - broadcasts via EventBroadcaster
 void on_person_recognized(const PersonRecognitionEvent& event) {
-    LOG_INFO("main", "Person recognized: " + event.subject +
-             " at camera " + event.camera_id +
-             " (similarity: " + std::to_string(event.similarity * 100.0) + "%)");
+    std::string log_msg = "Person recognized: " + event.subject +
+                         ", similarity=" + std::to_string(event.similarity * 100.0) + "%" +
+                         ", confidence=" + std::to_string(event.detection_confidence * 100.0) + "%" +
+                         ", dwell_time=" + std::to_string(event.dwell_time_seconds) + "s" +
+                         (event.is_new_person ? " [NEW PERSON]" : "") +
+                         (event.is_new_at_camera ? " [NEW AT CAMERA]" : "");
+
+    LOG_INFO("main", "Camera " + event.camera_id + ": " + log_msg);
 
     // Broadcast event to WebSocket clients via EventBroadcaster
     if (g_broadcaster) {
         g_broadcaster->emit_person_recognized(event);
+
+        // Also send detailed log
+        g_broadcaster->emit_log("INFO", "PersonTracker", log_msg, event.camera_id);
     }
 }
 
@@ -226,8 +298,8 @@ int main(int argc, char* argv[]) {
             manager_config,
             on_state_changed,
             on_error,
-            nullptr,  // motion callback
-            nullptr,  // face callback
+            on_motion_detected,  // Motion callback - broadcasts events via EventBroadcaster
+            on_face_detected,    // Face callback - broadcasts events via EventBroadcaster
             person_tracker.get()  // Pass person tracker for enterprise tracking
         );
 

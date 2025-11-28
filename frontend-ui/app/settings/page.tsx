@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -17,15 +17,33 @@ import {
   Database,
   TrendingUp,
   AlertCircle,
+  FileText,
+  ScanFace,
 } from 'lucide-react';
-import { Header } from '@/components/header';
+import { Layout } from '@/components/layout';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+
+// Event categories for log filtering
+const EVENT_CATEGORIES = {
+  motion: ['motion_detected'],
+  face: ['face_detected', 'person_recognized'],
+  camera: ['camera_started', 'camera_stopped', 'camera_error'],
+  system: ['worker_started', 'worker_stopped', 'pipeline_crashed', 'fps_drop'],
+  logs: ['log', 'INFO', 'DEBUG', 'WARNING', 'ERROR']
+};
+
+// Get all possible event types
+const ALL_EVENT_TYPES = Object.values(EVENT_CATEGORIES).flat();
 
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+
+  // Logs Settings
+  const [excludedTypes, setExcludedTypes] = useState<Set<string>>(new Set());
+  const isInitialMount = useRef(true);
 
   // Person Tracking Settings
   const [personTracking, setPersonTracking] = useState({
@@ -48,9 +66,32 @@ export default function SettingsPage() {
     metrics_interval: 30,
   });
 
+  // CompreFace Recognition Settings
+  const [comprefaceRecognition, setComprefaceRecognition] = useState({
+    similarity_threshold: 0.88,
+    description: '',
+  });
+
   useEffect(() => {
     loadSettings();
   }, []);
+
+  // Load excluded log types from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('excludedLogTypes');
+    if (saved) {
+      setExcludedTypes(new Set(JSON.parse(saved)));
+    }
+  }, []);
+
+  // Save excluded types to localStorage when changed (skip on initial mount)
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false; // Mark as no longer initial mount
+      return; // Don't save on initial mount
+    }
+    localStorage.setItem('excludedLogTypes', JSON.stringify([...excludedTypes]));
+  }, [excludedTypes]);
 
   const loadSettings = async () => {
     try {
@@ -58,17 +99,24 @@ export default function SettingsPage() {
       setErrorMessage('');
 
       // Load person tracking settings
-      const ptResponse = await fetch('http://localhost:8002/api/v1/settings/person-tracking/config');
+      const ptResponse = await fetch('http://192.168.0.24:8002/api/v1/settings/person-tracking/config');
       if (ptResponse.ok) {
         const ptData = await ptResponse.json();
         setPersonTracking(ptData);
       }
 
       // Load manager settings
-      const mgResponse = await fetch('http://localhost:8002/api/v1/settings/manager/config');
+      const mgResponse = await fetch('http://192.168.0.24:8002/api/v1/settings/manager/config');
       if (mgResponse.ok) {
         const mgData = await mgResponse.json();
         setManager(mgData);
+      }
+
+      // Load CompreFace recognition settings
+      const cfResponse = await fetch('http://192.168.0.24:8002/api/v1/settings/compreface-recognition/config');
+      if (cfResponse.ok) {
+        const cfData = await cfResponse.json();
+        setComprefaceRecognition(cfData);
       }
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -96,7 +144,7 @@ export default function SettingsPage() {
       formData.append('daily_reset_hour', personTracking.daily_reset_hour.toString());
       formData.append('archive_path', personTracking.archive_path);
 
-      const response = await fetch('http://localhost:8002/api/v1/settings/person-tracking/config', {
+      const response = await fetch('http://192.168.0.24:8002/api/v1/settings/person-tracking/config', {
         method: 'PUT',
         body: formData,
       });
@@ -126,7 +174,7 @@ export default function SettingsPage() {
       formData.append('enable_metrics', manager.enable_metrics.toString());
       formData.append('metrics_interval', manager.metrics_interval.toString());
 
-      const response = await fetch('http://localhost:8002/api/v1/settings/manager/config', {
+      const response = await fetch('http://192.168.0.24:8002/api/v1/settings/manager/config', {
         method: 'PUT',
         body: formData,
       });
@@ -145,12 +193,40 @@ export default function SettingsPage() {
     }
   };
 
+  const saveComprefaceRecognitionSettings = async () => {
+    try {
+      setSaving(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const formData = new FormData();
+      formData.append('similarity_threshold', comprefaceRecognition.similarity_threshold.toString());
+
+      const response = await fetch('http://192.168.0.24:8002/api/v1/settings/compreface-recognition/config', {
+        method: 'PUT',
+        body: formData,
+      });
+
+      if (response.ok) {
+        setSuccessMessage('CompreFace recognition settings saved successfully! New cameras will use this threshold.');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        throw new Error('Failed to save settings');
+      }
+    } catch (error) {
+      console.error('Failed to save CompreFace settings:', error);
+      setErrorMessage('Failed to save CompreFace recognition settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const resetPersonTracking = async () => {
     if (!confirm('Reset person tracking settings to defaults?')) return;
 
     try {
       setSaving(true);
-      const response = await fetch('http://localhost:8002/api/v1/settings/person_tracking/reset', {
+      const response = await fetch('http://192.168.0.24:8002/api/v1/settings/person_tracking/reset', {
         method: 'POST',
       });
 
@@ -172,7 +248,7 @@ export default function SettingsPage() {
 
     try {
       setSaving(true);
-      const response = await fetch('http://localhost:8002/api/v1/settings/manager/reset', {
+      const response = await fetch('http://192.168.0.24:8002/api/v1/settings/manager/reset', {
         method: 'POST',
       });
 
@@ -189,20 +265,30 @@ export default function SettingsPage() {
     }
   };
 
+  const toggleExcludedType = (type: string) => {
+    setExcludedTypes((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(type)) {
+        newSet.delete(type);
+      } else {
+        newSet.add(type);
+      }
+      return newSet;
+    });
+  };
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50">
-        <Header />
-        <div className="flex items-center justify-center h-96">
+      <Layout>
+        <div className="flex items-center justify-center min-h-screen">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
         </div>
-      </div>
+      </Layout>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Header />
+    <Layout>
       <div className="container mx-auto py-8 px-4 max-w-7xl">
         {/* Page Header */}
         <div className="mb-6">
@@ -530,8 +616,151 @@ export default function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* CompreFace Recognition Settings */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <ScanFace className="h-5 w-5 text-blue-600" />
+                Face Recognition
+              </CardTitle>
+              <CardDescription>
+                Configure CompreFace face recognition matching threshold
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Similarity Threshold */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="cf-similarity" className="font-semibold">
+                    Similarity Threshold
+                  </Label>
+                  <span className="text-2xl font-bold text-blue-600">
+                    {Math.round(comprefaceRecognition.similarity_threshold * 100)}%
+                  </span>
+                </div>
+
+                <input
+                  id="cf-similarity"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={comprefaceRecognition.similarity_threshold * 100}
+                  onChange={(e) =>
+                    setComprefaceRecognition({
+                      ...comprefaceRecognition,
+                      similarity_threshold: parseFloat(e.target.value) / 100,
+                    })
+                  }
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                />
+
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>0% (Match All)</span>
+                  <span>50% (Moderate)</span>
+                  <span>100% (Exact Match)</span>
+                </div>
+
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription className="text-sm">
+                    <strong>What this controls:</strong> Minimum similarity score required for CompreFace to consider a face match as valid.
+                    <br />
+                    • <strong>Lower values (60-80%):</strong> More matches, but may include false positives
+                    <br />
+                    • <strong>Recommended (85-90%):</strong> Balanced accuracy
+                    <br />
+                    • <strong>Higher values (90-95%):</strong> Stricter matching, may miss some valid matches
+                    <br />
+                    <span className="text-xs text-gray-600 mt-2 block">
+                      Current: {(comprefaceRecognition.similarity_threshold * 100).toFixed(1)}%
+                      {comprefaceRecognition.similarity_threshold >= 0.90 ? ' (Strict)' :
+                       comprefaceRecognition.similarity_threshold >= 0.80 ? ' (Balanced)' : ' (Lenient)'}
+                    </span>
+                  </AlertDescription>
+                </Alert>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 pt-4">
+                <Button
+                  onClick={saveComprefaceRecognitionSettings}
+                  disabled={saving}
+                  className="flex-1"
+                >
+                  <Save className="h-4 w-4 mr-2" />
+                  Save Recognition Settings
+                </Button>
+              </div>
+
+              {/* Info about when changes take effect */}
+              <Alert className="bg-blue-50 border-blue-200">
+                <AlertCircle className="h-4 w-4 text-blue-600" />
+                <AlertDescription className="text-blue-800 text-sm">
+                  <strong>Note:</strong> Changes apply to new camera configurations. Existing cameras need to be updated to use the new threshold.
+                </AlertDescription>
+              </Alert>
+            </CardContent>
+          </Card>
+
+          {/* Logs Settings */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5 text-blue-600" />
+                Logs Settings
+              </CardTitle>
+              <CardDescription>
+                Configure which event types to exclude from logs
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div>
+                <Label className="text-sm font-semibold mb-3 block">
+                  Event Types to Capture
+                </Label>
+                <p className="text-sm text-gray-500 mb-4">
+                  Toggle off event types you don't want to be logged. Changes apply immediately and persist across sessions.
+                </p>
+                <div className="grid grid-cols-1 gap-3 max-h-80 overflow-y-auto p-3 bg-slate-50 rounded-lg border">
+                  {ALL_EVENT_TYPES.map((type) => (
+                    <div key={type} className="flex items-center justify-between p-2 bg-white rounded border hover:bg-slate-50 transition-colors">
+                      <Label htmlFor={`log-type-${type}`} className="text-sm cursor-pointer flex-1 font-medium">
+                        {type}
+                      </Label>
+                      <Switch
+                        id={`log-type-${type}`}
+                        checked={!excludedTypes.has(type)}
+                        onCheckedChange={() => toggleExcludedType(type)}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-500 mt-3">
+                  <strong>Note:</strong> Excluded events will not be captured or displayed in the Logs page.
+                  Currently {excludedTypes.size} event type{excludedTypes.size !== 1 ? 's' : ''} excluded.
+                </p>
+              </div>
+
+              {/* Info about log categories */}
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Event Categories:</strong><br />
+                  <span className="text-xs">
+                    • <strong>Motion:</strong> motion_detected<br />
+                    • <strong>Face:</strong> face_detected, person_recognized<br />
+                    • <strong>Camera:</strong> camera_started, camera_stopped, camera_error<br />
+                    • <strong>System:</strong> worker_started, worker_stopped, pipeline_crashed, fps_drop<br />
+                    • <strong>Logs:</strong> log, INFO, DEBUG, WARNING, ERROR
+                  </span>
+                </AlertDescription>
+              </Alert>
+            </CardContent>
+          </Card>
         </div>
       </div>
-    </div>
+    </Layout>
   );
 }

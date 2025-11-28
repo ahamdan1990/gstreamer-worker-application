@@ -45,6 +45,53 @@ export default function AddCameraPage() {
       required_frames: 3,
       max_frame_width: 640,
       max_frame_height: 480
+    },
+    face_detection: {
+      enabled: false,
+      model_path: 'models/scrfd/scrfd_10g_bnkps.onnx',
+      input_size: 640,
+      confidence_threshold: 0.3,
+      nms_threshold: 0.5,
+      frame_skip: 2,
+      max_frame_width: 1920,
+      max_frame_height: 1080,
+      min_face_size: 0.0003,
+      max_faces: 30,
+      required_frames: 1,
+      cooldown_seconds: 0.3,
+      enable_frontal_face_filter: true,
+      eye_tilt_threshold: 0.3,
+      min_eye_distance: 0.01,
+      nose_center_offset_threshold: 0.3,
+      eye_to_face_ratio_min: 0.25,
+      eye_to_face_ratio_max: 0.65,
+      enable_min_face_size_filter: true,
+      min_face_width: 80,
+      min_face_height: 80,
+      use_tensorrt: true,
+      use_cuda: true,
+      max_batch_size: 4,
+      save_faces: true,
+      save_path: './face_crops',
+      save_margin: 0.3,
+      min_save_confidence: 0.2,
+      max_saves_per_event: 5,
+      enable_blur_detection: true,
+      min_laplacian_variance: 250.0,
+      blur_kernel_size: 3,
+      motion_triggered_detection: true,
+      motion_detection_cooldown: 1.5,
+      enable_compreface: true,
+      compreface_url: 'http://localhost:8000',
+      compreface_api_key: '',
+      compreface_subject: 'unknown',
+      compreface_timeout_ms: 8000,
+      compreface_max_queue_size: 200,
+      enable_visualization: true,
+      draw_landmarks: true,
+      draw_confidence: true,
+      box_thickness: 2,
+      font_scale: 0.5
     }
   });
 
@@ -344,6 +391,205 @@ export default function AddCameraPage() {
                           })
                         }
                       />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Face Detection */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Face Detection</CardTitle>
+              <CardDescription>Configure face detection and recognition settings</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between pb-4 border-b">
+                <div>
+                  <Label htmlFor="face_enabled">Enable Face Detection</Label>
+                  <p className="text-sm text-muted-foreground">Detect and recognize faces in camera feed</p>
+                </div>
+                <Switch
+                  id="face_enabled"
+                  checked={formData.face_detection?.enabled}
+                  onCheckedChange={(checked) =>
+                    setFormData({
+                      ...formData,
+                      face_detection: {...formData.face_detection!, enabled: checked}
+                    })
+                  }
+                />
+              </div>
+
+              {formData.face_detection?.enabled && (
+                <div className="space-y-4 pt-4">
+                  {/* Model Configuration */}
+                  <div className="space-y-3">
+                    <h4 className="font-medium text-sm">Model Configuration</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="face_input_size">Input Size</Label>
+                        <Input
+                          id="face_input_size"
+                          type="number"
+                          value={formData.face_detection.input_size}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              face_detection: {...formData.face_detection!, input_size: parseInt(e.target.value)}
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="face_confidence">Confidence Threshold</Label>
+                        <Input
+                          id="face_confidence"
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          max="1"
+                          value={formData.face_detection.confidence_threshold}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              face_detection: {...formData.face_detection!, confidence_threshold: parseFloat(e.target.value)}
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Face Quality Filtering */}
+                  <div className="space-y-3 border-t pt-3">
+                    <h4 className="font-medium text-sm">Face Quality Filtering</h4>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="face_frontal_filter">Enable Frontal Face Filter</Label>
+                      <Switch
+                        id="face_frontal_filter"
+                        checked={formData.face_detection.enable_frontal_face_filter}
+                        onCheckedChange={(checked) =>
+                          setFormData({
+                            ...formData,
+                            face_detection: {...formData.face_detection!, enable_frontal_face_filter: checked}
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="face_eye_tilt">Eye Tilt Threshold</Label>
+                        <Input
+                          id="face_eye_tilt"
+                          type="number"
+                          step="0.01"
+                          value={formData.face_detection.eye_tilt_threshold}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              face_detection: {...formData.face_detection!, eye_tilt_threshold: parseFloat(e.target.value)}
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="face_min_size_filter">Enable Min Size Filter</Label>
+                        <Switch
+                          id="face_min_size_filter"
+                          checked={formData.face_detection.enable_min_face_size_filter}
+                          onCheckedChange={(checked) =>
+                            setFormData({
+                              ...formData,
+                              face_detection: {...formData.face_detection!, enable_min_face_size_filter: checked}
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* CompreFace Integration */}
+                  <div className="space-y-3 border-t pt-3">
+                    <h4 className="font-medium text-sm">CompreFace Integration</h4>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="face_compreface">Enable CompreFace</Label>
+                      <Switch
+                        id="face_compreface"
+                        checked={formData.face_detection.enable_compreface}
+                        onCheckedChange={(checked) =>
+                          setFormData({
+                            ...formData,
+                            face_detection: {...formData.face_detection!, enable_compreface: checked}
+                          })
+                        }
+                      />
+                    </div>
+                    {formData.face_detection.enable_compreface && (
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="face_compreface_url">CompreFace URL</Label>
+                          <Input
+                            id="face_compreface_url"
+                            value={formData.face_detection.compreface_url}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                face_detection: {...formData.face_detection!, compreface_url: e.target.value}
+                              })
+                            }
+                            placeholder="http://localhost:8000"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="face_compreface_key">API Key</Label>
+                          <Input
+                            id="face_compreface_key"
+                            type="password"
+                            value={formData.face_detection.compreface_api_key}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                face_detection: {...formData.face_detection!, compreface_api_key: e.target.value}
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Hardware Acceleration */}
+                  <div className="space-y-3 border-t pt-3">
+                    <h4 className="font-medium text-sm">Hardware Acceleration</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="face_tensorrt">Use TensorRT</Label>
+                        <Switch
+                          id="face_tensorrt"
+                          checked={formData.face_detection.use_tensorrt}
+                          onCheckedChange={(checked) =>
+                            setFormData({
+                              ...formData,
+                              face_detection: {...formData.face_detection!, use_tensorrt: checked}
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="face_cuda">Use CUDA</Label>
+                        <Switch
+                          id="face_cuda"
+                          checked={formData.face_detection.use_cuda}
+                          onCheckedChange={(checked) =>
+                            setFormData({
+                              ...formData,
+                              face_detection: {...formData.face_detection!, use_cuda: checked}
+                            })
+                          }
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>

@@ -11,7 +11,10 @@ import {
   Bell,
   Settings,
   Users,
-  FileText
+  FileText,
+  UserCircle,
+  Webhook,
+  ScrollText
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
@@ -19,13 +22,20 @@ const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Cameras', href: '/cameras', icon: Camera },
   { name: 'Events', href: '/events', icon: Bell },
+  { name: 'Profiles', href: '/profiles', icon: UserCircle },
+  { name: 'Logs', href: '/logs', icon: ScrollText },
   { name: 'Analytics', href: '/analytics', icon: Activity },
   { name: 'Watchlists', href: '/watchlists', icon: Users },
+  { name: 'Webhooks', href: '/webhooks', icon: Webhook },
   { name: 'Reports', href: '/reports', icon: FileText },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
-export function Sidebar() {
+interface SidebarProps {
+  wsConnected?: boolean;
+}
+
+export function Sidebar({ wsConnected }: SidebarProps = {}) {
   const pathname = usePathname();
 
   return (
@@ -69,10 +79,33 @@ export function Sidebar() {
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
             System Status
           </h3>
-          <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-            All systems operational
-          </p>
-          <Badge className="mt-2 bg-green-500">Healthy</Badge>
+          {wsConnected !== undefined && (
+            <div className="mt-2">
+              <Badge
+                variant={wsConnected ? 'default' : 'secondary'}
+                className={`gap-2 ${
+                  wsConnected
+                    ? 'bg-green-500 hover:bg-green-600'
+                    : 'bg-gray-400'
+                }`}
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    wsConnected ? 'bg-white animate-pulse' : 'bg-white'
+                  }`}
+                />
+                {wsConnected ? 'Connected' : 'Disconnected'}
+              </Badge>
+            </div>
+          )}
+          {wsConnected === undefined && (
+            <>
+              <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                All systems operational
+              </p>
+              <Badge className="mt-2 bg-green-500">Healthy</Badge>
+            </>
+          )}
         </div>
       </div>
     </div>
