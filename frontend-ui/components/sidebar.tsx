@@ -14,7 +14,8 @@ import {
   FileText,
   UserCircle,
   Webhook,
-  ScrollText
+  ScrollText,
+  ScanFace
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
@@ -22,6 +23,7 @@ const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Cameras', href: '/cameras', icon: Camera },
   { name: 'Events', href: '/events', icon: Bell },
+  { name: 'Face Detections', href: '/face-detections', icon: ScanFace },
   { name: 'Profiles', href: '/profiles', icon: UserCircle },
   { name: 'Logs', href: '/logs', icon: ScrollText },
   { name: 'Analytics', href: '/analytics', icon: Activity },

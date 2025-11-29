@@ -9,8 +9,24 @@
 #include <algorithm>
 #include <numeric>
 #include <cuda_runtime.h>
+#include <random>
+#include <chrono>
 
 namespace gstreamer_worker {
+
+// Helper function to generate UUID for tracking
+static std::string generate_tracking_id() {
+    static std::random_device rd;
+    static std::mt19937_64 gen(rd());
+    static std::uniform_int_distribution<uint64_t> dis;
+
+    uint64_t high = dis(gen);
+    uint64_t low = dis(gen);
+
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0') << std::setw(16) << high << std::setw(16) << low;
+    return ss.str();
+}
 
 FaceDetector::FaceDetector(
     const std::string& camera_id,
@@ -270,26 +286,99 @@ bool FaceDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
             latest_detections_ = detections;
         }
 
-        // Check if we should trigger an event (only for NEW faces)
-        faces_detected = !new_face_detections.empty();
-        if (should_trigger_event(faces_detected)) {
-            // Create face event (only for NEW faces)
+        // Check if we should emit events for tracked faces
+        // We emit events ONLY for:
+        // 1. First detection of a new face
+        // 2. When a face gets recognized (subject changes from "unknown")
+        std::vector<FaceDetection> event_faces;
+        std::vector<std::string> event_tracking_ids;
+        std::vector<std::string> event_subjects;
+        std::vector<bool> event_is_recognized;
+        std::vector<float> event_recognition_similarity;
+        std::vector<int> event_recognition_attempts;
+        std::vector<double> event_tracking_durations;
+        std::vector<bool> event_is_first_detection;
+        std::vector<std::string> event_face_crop_paths;
+
+        {
+            std::lock_guard<std::mutex> lock(face_mutex_);
+            auto now = std::chrono::steady_clock::now();
+
+            for (auto& tracked : tracked_faces_) {
+                bool should_emit = false;
+                bool is_first = false;
+
+                // Emit event if this is the first detection (not yet emitted)
+                if (!tracked.event_emitted) {
+                    should_emit = true;
+                    is_first = true;
+                    tracked.event_emitted = true;
+                }
+                // Emit event if face was just recognized (recognition_attempts changed)
+                else if (tracked.is_recognized && tracked.recognition_attempts > 0) {
+                    // Only emit recognition update if we haven't emitted it yet
+                    // This is tracked by checking if last_event_time is recent enough
+                    double time_since_last_event = std::chrono::duration<double>(now - last_event_time_).count();
+                    if (time_since_last_event > 0.5) {  // Emit recognition update if >0.5s since last event
+                        should_emit = true;
+                        is_first = false;
+                    }
+                }
+
+                if (should_emit) {
+                    // Create FaceDetection from tracked face
+                    FaceDetection detection;
+                    detection.bbox = tracked.bbox;
+                    detection.confidence = tracked.is_recognized ? tracked.recognition_confidence : 0.5f;
+
+                    event_faces.push_back(detection);
+                    event_tracking_ids.push_back(tracked.tracking_id);
+                    event_subjects.push_back(tracked.subject);
+                    event_is_recognized.push_back(tracked.is_recognized);
+                    event_recognition_similarity.push_back(tracked.recognition_confidence);
+                    event_recognition_attempts.push_back(tracked.recognition_attempts);
+                    event_tracking_durations.push_back(tracked.get_duration_seconds());
+                    event_is_first_detection.push_back(is_first);
+                    event_face_crop_paths.push_back("");  // Will be filled after saving crops
+                }
+            }
+
+            if (!event_faces.empty()) {
+                last_event_time_ = now;
+            }
+        }
+
+        // Save face crops for NEW faces only (first detection)
+        if (!event_faces.empty()) {
+            for (size_t i = 0; i < event_faces.size(); i++) {
+                if (event_is_first_detection[i]) {
+                    // Save crop for this face
+                    std::vector<FaceDetection> single_face = {event_faces[i]};
+                    auto crop_paths = save_face_crops(d_frame, single_face, std::chrono::duration<double>(
+                        std::chrono::system_clock::now().time_since_epoch()
+                    ).count());
+                    if (!crop_paths.empty()) {
+                        event_face_crop_paths[i] = crop_paths[0];
+                    }
+                }
+            }
+
+            // Create and emit event
             FaceEvent event;
             event.camera_id = camera_id_;
             event.timestamp = std::chrono::duration<double>(
                 std::chrono::system_clock::now().time_since_epoch()
             ).count();
-            event.num_faces = static_cast<int>(new_face_detections.size());
-            event.faces = new_face_detections;
-
-            // Update last event time
-            {
-                std::lock_guard<std::mutex> lock(face_mutex_);
-                last_event_time_ = std::chrono::steady_clock::now();
-            }
-
-            // Save face crops for verification and CompreFace integration (only NEW faces)
-            event.face_crop_paths = save_face_crops(d_frame, new_face_detections, event.timestamp);
+            event.num_faces = static_cast<int>(event_faces.size());
+            event.faces = event_faces;
+            event.face_crop_paths = event_face_crop_paths;
+            event.tracking_ids = event_tracking_ids;
+            event.subjects = event_subjects;
+            event.is_recognized = event_is_recognized;
+            event.recognition_similarity = event_recognition_similarity;
+            event.recognition_attempts = event_recognition_attempts;
+            event.tracking_durations = event_tracking_durations;
+            event.is_first_detection = event_is_first_detection;
 
             // Trigger callback
             if (on_face_) {
@@ -303,6 +392,8 @@ bool FaceDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
                 stats_.total_faces_detected += detections.size();
             }
         }
+
+        faces_detected = !detections.empty();
 
     } catch (const std::exception& e) {
         std::cerr << "[FaceDetector:" << camera_id_ << "] Error processing frame: "
@@ -1120,16 +1211,19 @@ void FaceDetector::update_face_tracking(const std::vector<FaceDetection>& detect
         }
 
         if (!already_tracked) {
-            // Add new track
+            // Add new track with unique tracking ID
             TrackedFace tf;
+            tf.tracking_id = generate_tracking_id();
             tf.bbox = detection.bbox;
             tf.first_seen = now;
             tf.last_seen = now;
             tf.frames_tracked = 1;
+            tf.event_emitted = false;  // Event not yet emitted for this tracking session
             tracked_faces_.push_back(tf);
 
             std::cout << "[FaceDetector:" << camera_id_ << "] Started tracking new face "
-                      << "(total tracks: " << tracked_faces_.size() << ")" << std::endl;
+                      << "(tracking_id: " << tf.tracking_id.substr(0, 8) << "..., "
+                      << "total tracks: " << tracked_faces_.size() << ")" << std::endl;
         }
     }
 }

@@ -205,6 +205,7 @@ private:
 
     // Face tracking (to avoid re-detecting same faces)
     struct TrackedFace {
+        std::string tracking_id;              // Unique UUID for this tracking session
         FaceBoundingBox bbox;
         std::chrono::steady_clock::time_point first_seen;
         std::chrono::steady_clock::time_point last_seen;
@@ -219,6 +220,9 @@ private:
         int recognition_attempts = 0;         // Number of recognition attempts (for retry logic)
         int failed_recognitions = 0;          // Number of failed recognition attempts
 
+        // Event emission tracking
+        bool event_emitted = false;           // Whether we've emitted an event for this tracking session
+
         // Duration tracking
         double get_duration_seconds() const {
             auto duration = std::chrono::duration<double>(last_seen - first_seen);
@@ -226,8 +230,8 @@ private:
         }
     };
     std::vector<TrackedFace> tracked_faces_;
-    double face_tracking_timeout_ = 15.0;  // Remove tracked faces after 15 seconds (increased)
-    float face_tracking_iou_threshold_ = 0.35f;  // IoU threshold for matching faces (better separation)
+    double face_tracking_timeout_ = 60.0;  // Remove tracked faces after 60 seconds (increased from 15s)
+    float face_tracking_iou_threshold_ = 0.15f;  // IoU threshold for matching faces (lowered to allow movement)
     const int MAX_RECOGNITION_ATTEMPTS = 3;  // Max retry attempts per person
 
     mutable std::mutex face_mutex_;

@@ -266,12 +266,25 @@ void EventBroadcaster::emit_face_detected(
     const std::string& camera_id,
     float confidence,
     int detection_count,
-    const std::vector<std::string>& face_crop_paths
+    const std::vector<std::string>& face_crop_paths,
+    const std::string& tracking_id,
+    const std::string& subject,
+    bool is_recognized,
+    float recognition_similarity,
+    int recognition_attempts,
+    double tracking_duration,
+    bool is_first_detection
 ) {
     json data = {
         {"confidence", confidence},
         {"detection_count", detection_count},
-        {"subject", "unknown"}
+        {"subject", subject},
+        {"tracking_id", tracking_id},
+        {"is_recognized", is_recognized},
+        {"similarity", recognition_similarity},
+        {"recognition_attempts", recognition_attempts},
+        {"tracking_duration_seconds", tracking_duration},
+        {"is_first_detection", is_first_detection}
     };
 
     // Add face crop paths if available
@@ -283,8 +296,14 @@ void EventBroadcaster::emit_face_detected(
     }
 
     emit_event("face_detected", data, camera_id);
-    LOG_INFO(log_tag_, "Face detected event emitted: " + camera_id +
-             " (confidence: " + std::to_string(confidence) + ")");
+
+    std::string log_msg = "Face detected event emitted: " + camera_id +
+                          " (tracking_id: " + tracking_id.substr(0, 8) + "..." +
+                          ", subject: " + subject +
+                          ", confidence: " + std::to_string(confidence) +
+                          ", duration: " + std::to_string(tracking_duration) + "s" +
+                          ", attempts: " + std::to_string(recognition_attempts) + "/3)";
+    LOG_INFO(log_tag_, log_msg);
 }
 
 void EventBroadcaster::emit_log(

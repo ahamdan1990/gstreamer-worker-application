@@ -177,17 +177,31 @@ public:
     void emit_person_recognized(const PersonRecognitionEvent& event);
 
     /**
-     * @brief Emit face detected event (unknown person)
+     * @brief Emit face detected event (with tracking information)
      * @param camera_id Camera identifier
      * @param confidence Detection confidence
      * @param detection_count Number of detections
      * @param face_crop_paths Paths to saved face crop images
+     * @param tracking_id Unique tracking ID for this face
+     * @param subject Recognized person name/ID ("unknown" if not recognized)
+     * @param is_recognized Whether face is recognized
+     * @param recognition_similarity Recognition similarity score from CompreFace (0.0-1.0)
+     * @param recognition_attempts Number of recognition attempts
+     * @param tracking_duration How long face has been tracked (seconds)
+     * @param is_first_detection Whether this is the first detection of this tracking session
      */
     void emit_face_detected(
         const std::string& camera_id,
         float confidence,
         int detection_count,
-        const std::vector<std::string>& face_crop_paths = {}
+        const std::vector<std::string>& face_crop_paths = {},
+        const std::string& tracking_id = "",
+        const std::string& subject = "unknown",
+        bool is_recognized = false,
+        float recognition_similarity = 0.0f,
+        int recognition_attempts = 0,
+        double tracking_duration = 0.0,
+        bool is_first_detection = true
     );
 
     /**

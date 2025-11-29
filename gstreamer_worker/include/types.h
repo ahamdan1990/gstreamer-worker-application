@@ -151,6 +151,15 @@ struct FaceEvent {
     std::vector<FaceDetection> faces;
     std::vector<std::string> face_crop_paths;  // Paths to saved face crop images
 
+    // Tracking information (per face)
+    std::vector<std::string> tracking_ids;      // Unique tracking ID per face
+    std::vector<std::string> subjects;          // Recognized person name/ID ("unknown" if not recognized)
+    std::vector<bool> is_recognized;            // Whether each face is recognized
+    std::vector<float> recognition_similarity;  // Recognition similarity score (0.0-1.0) from CompreFace
+    std::vector<int> recognition_attempts;      // Number of recognition attempts per face
+    std::vector<double> tracking_durations;     // How long each face has been tracked (seconds)
+    std::vector<bool> is_first_detection;       // Whether this is the first detection of this tracking session
+
     FaceEvent() = default;
 };
 

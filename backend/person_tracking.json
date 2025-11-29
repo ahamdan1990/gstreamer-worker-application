@@ -1,15 +1,15 @@
 {
   "persons": [
     {
-      "avg_similarity": 0.9717633128166199,
+      "avg_similarity": 0.9701979160308838,
       "camera_appearances": {
         "Experience Center": {
-          "avg_confidence": 0.9738289713859558,
+          "avg_confidence": 0.9704635143280029,
           "camera_id": "Experience Center",
-          "detection_count": 10,
-          "dwell_time_seconds": 254.0,
+          "detection_count": 66,
+          "dwell_time_seconds": 19439.0,
           "first_seen": 1764333867,
-          "last_seen": 1764334121
+          "last_seen": 1764353306
         },
         "front_door": {
           "avg_confidence": 0.9614349603652954,
@@ -21,15 +21,15 @@
         }
       },
       "first_seen_global": 1764332439,
-      "last_seen_global": 1764334121,
-      "last_similarity": 0.982729971408844,
+      "last_seen_global": 1764353306,
+      "last_similarity": 0.9673399925231934,
       "subject": "ashamdan1990@gmail.com",
-      "total_detections": 12,
-      "total_dwell_time_seconds": 255.0
+      "total_detections": 68,
+      "total_dwell_time_seconds": 19440.0
     }
   ],
-  "timestamp": 1764335550,
-  "total_events": 6,
+  "timestamp": 1764376465,
+  "total_events": 19,
   "total_persons_tracked": 1,
   "version": "1.0"
 }

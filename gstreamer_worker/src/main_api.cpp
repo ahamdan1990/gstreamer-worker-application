@@ -91,12 +91,31 @@ void on_face_detected(const FaceEvent& event) {
 
          // Broadcast to WebSocket clients for real-time monitoring
         if (g_broadcaster) {
-            g_broadcaster->emit_face_detected(
-                event.camera_id,
-                event.faces[0].confidence,
-                event.num_faces,
-                event.face_crop_paths
-            );
+            // Emit event for each face with its tracking information
+            for (int i = 0; i < event.num_faces; i++) {
+                std::string tracking_id = i < event.tracking_ids.size() ? event.tracking_ids[i] : "";
+                std::string subject = i < event.subjects.size() ? event.subjects[i] : "unknown";
+                bool is_recognized = i < event.is_recognized.size() ? event.is_recognized[i] : false;
+                float recognition_similarity = i < event.recognition_similarity.size() ? event.recognition_similarity[i] : 0.0f;
+                int recognition_attempts = i < event.recognition_attempts.size() ? event.recognition_attempts[i] : 0;
+                double tracking_duration = i < event.tracking_durations.size() ? event.tracking_durations[i] : 0.0;
+                bool is_first_detection = i < event.is_first_detection.size() ? event.is_first_detection[i] : true;
+                std::vector<std::string> face_crop_path = {i < event.face_crop_paths.size() ? event.face_crop_paths[i] : ""};
+
+                g_broadcaster->emit_face_detected(
+                    event.camera_id,
+                    event.faces[i].confidence,
+                    1,  // detection_count is 1 per face
+                    face_crop_path,
+                    tracking_id,
+                    subject,
+                    is_recognized,
+                    recognition_similarity,
+                    recognition_attempts,
+                    tracking_duration,
+                    is_first_detection
+                );
+            }
 
             // Also send detailed log with bounding box info
             g_broadcaster->emit_log("INFO", "FaceDetector", log_msg, event.camera_id);

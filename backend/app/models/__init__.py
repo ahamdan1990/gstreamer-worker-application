@@ -6,6 +6,7 @@ from app.models.profile import Profile, watchlist_members
 from app.models.watchlist import Watchlist
 from app.models.event import Event
 from app.models.person_event import PersonEvent
+from app.models.face_detection_event import FaceDetectionEvent
 from app.models.webhook import Webhook
 from app.models.user import User
 from app.models.api_key import APIKey
@@ -17,6 +18,7 @@ __all__ = [
     "watchlist_members",
     "Event",
     "PersonEvent",
+    "FaceDetectionEvent",
     "Webhook",
     "User",
     "APIKey",

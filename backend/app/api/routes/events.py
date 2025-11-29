@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db.base import get_db
 from app.models.person_event import PersonEvent
+from app.models.face_detection_event import FaceDetectionEvent
 from app.models.profile import Profile
 
 router = APIRouter()
@@ -372,4 +373,295 @@ async def get_events_statistics(
         "alerts_sent": alerts_sent,
         "acknowledgment_rate": round((acknowledged / total_events * 100), 2) if total_events > 0 else 0.0,
         "alert_rate": round((alerts_sent / total_events * 100), 2) if total_events > 0 else 0.0,
+    }
+
+
+# ============================================================================
+# Face Detection Events (with Tracking)
+# ============================================================================
+
+@router.get("/faces", response_model=dict)
+async def list_face_detection_events(
+    skip: int = 0,
+    limit: int = 100,
+    camera_id: Optional[str] = None,
+    tracking_id: Optional[str] = None,
+    is_recognized: Optional[bool] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List all face detection events with optional filtering
+
+    Shows face detections with tracking information including:
+    - Unique tracking IDs
+    - Recognition status
+    - Tracking duration
+    - Recognition attempts
+    """
+    query = select(FaceDetectionEvent)
+
+    # Apply filters
+    filters = []
+
+    if camera_id:
+        filters.append(FaceDetectionEvent.camera_id == camera_id)
+
+    if tracking_id:
+        filters.append(FaceDetectionEvent.tracking_id == tracking_id)
+
+    if is_recognized is not None:
+        filters.append(FaceDetectionEvent.is_recognized == is_recognized)
+
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            filters.append(FaceDetectionEvent.created_at >= start_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid start_date format. Use ISO format (YYYY-MM-DDTHH:MM:SS)"
+            )
+
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            filters.append(FaceDetectionEvent.created_at <= end_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid end_date format. Use ISO format (YYYY-MM-DDTHH:MM:SS)"
+            )
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    # Get total count
+    count_query = select(func.count()).select_from(FaceDetectionEvent)
+    if filters:
+        count_query = count_query.where(and_(*filters))
+
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # Apply pagination and ordering
+    query = query.offset(skip).limit(limit).order_by(FaceDetectionEvent.created_at.desc())
+
+    result = await db.execute(query)
+    events = result.scalars().all()
+
+    return {
+        "events": [
+            {
+                "id": str(e.id),
+                "tracking_id": e.tracking_id,
+                "camera_id": e.camera_id,
+                "subject": e.subject,
+                "is_recognized": e.is_recognized,
+                "confidence": e.confidence,
+                "recognition_attempts": e.recognition_attempts,
+                "tracking_duration_seconds": e.tracking_duration_seconds,
+                "is_first_detection": e.is_first_detection,
+                "image_url": e.image_url,
+                "thumbnail_url": e.thumbnail_url,
+                "bounding_box": e.bounding_box,
+                "extra_metadata": e.extra_metadata,
+                "worker_metadata": e.worker_metadata,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+                "updated_at": e.updated_at.isoformat() if e.updated_at else None,
+            }
+            for e in events
+        ],
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
+
+
+@router.get("/faces/daily-summary", response_model=dict)
+async def get_daily_person_summary(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get daily summary of recognized persons
+
+    Groups recognized faces by person and date, showing:
+    - Person name
+    - Number of detections per day
+    - First and last detection times
+    - Sample face crops
+    """
+    query = select(FaceDetectionEvent).where(FaceDetectionEvent.is_recognized == True)
+
+    filters = []
+
+    if camera_id:
+        filters.append(FaceDetectionEvent.camera_id == camera_id)
+
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            filters.append(FaceDetectionEvent.created_at >= start_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid start_date format"
+            )
+
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            filters.append(FaceDetectionEvent.created_at <= end_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid end_date format"
+            )
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    query = query.order_by(FaceDetectionEvent.created_at.desc())
+
+    result = await db.execute(query)
+    events = result.scalars().all()
+
+    # Group by subject and date
+    from collections import defaultdict
+    daily_summary = defaultdict(lambda: defaultdict(list))
+
+    for event in events:
+        if event.created_at:
+            date_key = event.created_at.date().isoformat()
+            daily_summary[event.subject][date_key].append(event)
+
+    # Format response
+    summary_data = []
+    for subject, dates in daily_summary.items():
+        for date, detections in dates.items():
+            # Get first and last detection times
+            times = [d.created_at for d in detections if d.created_at]
+            first_seen = min(times) if times else None
+            last_seen = max(times) if times else None
+
+            # Get sample images (up to 3)
+            sample_images = [
+                d.image_url for d in detections[:3] if d.image_url
+            ]
+
+            # Calculate average confidence
+            confidences = [d.confidence for d in detections if d.confidence]
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+
+            # Get cameras used
+            cameras = list(set(d.camera_id for d in detections))
+
+            summary_data.append({
+                "subject": subject,
+                "date": date,
+                "detection_count": len(detections),
+                "first_seen": first_seen.isoformat() if first_seen else None,
+                "last_seen": last_seen.isoformat() if last_seen else None,
+                "avg_confidence": round(avg_confidence, 2),
+                "sample_images": sample_images,
+                "cameras": cameras,
+                "total_duration": sum(d.tracking_duration_seconds for d in detections)
+            })
+
+    # Sort by date (newest first), then by subject
+    summary_data.sort(key=lambda x: (x["date"], x["subject"]), reverse=True)
+
+    return {
+        "summary": summary_data,
+        "total_days": len(set(item["date"] for item in summary_data)),
+        "total_persons": len(set(item["subject"] for item in summary_data)),
+        "total_detections": sum(item["detection_count"] for item in summary_data)
+    }
+
+
+@router.get("/faces/{tracking_id}", response_model=dict)
+async def get_face_detection_event(
+    tracking_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get a specific face detection event by tracking ID
+    """
+    result = await db.execute(
+        select(FaceDetectionEvent)
+        .where(FaceDetectionEvent.tracking_id == tracking_id)
+    )
+    event = result.scalar_one_or_none()
+
+    if not event:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Face detection event with tracking_id {tracking_id} not found"
+        )
+
+    return {
+        "id": str(event.id),
+        "tracking_id": event.tracking_id,
+        "camera_id": event.camera_id,
+        "subject": event.subject,
+        "is_recognized": event.is_recognized,
+        "confidence": event.confidence,
+        "recognition_attempts": event.recognition_attempts,
+        "tracking_duration_seconds": event.tracking_duration_seconds,
+        "is_first_detection": event.is_first_detection,
+        "image_url": event.image_url,
+        "thumbnail_url": event.thumbnail_url,
+        "bounding_box": event.bounding_box,
+        "extra_metadata": event.extra_metadata,
+        "worker_metadata": event.worker_metadata,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+        "updated_at": event.updated_at.isoformat() if event.updated_at else None,
+    }
+
+
+@router.get("/faces/camera/{camera_id}", response_model=dict)
+async def get_face_events_by_camera(
+    camera_id: str,
+    skip: int = 0,
+    limit: int = 50,
+    is_recognized: Optional[bool] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get all face detection events for a specific camera
+    """
+    query = (
+        select(FaceDetectionEvent)
+        .where(FaceDetectionEvent.camera_id == camera_id)
+    )
+
+    if is_recognized is not None:
+        query = query.where(FaceDetectionEvent.is_recognized == is_recognized)
+
+    query = query.offset(skip).limit(limit).order_by(FaceDetectionEvent.created_at.desc())
+
+    result = await db.execute(query)
+    events = result.scalars().all()
+
+    return {
+        "events": [
+            {
+                "id": str(e.id),
+                "tracking_id": e.tracking_id,
+                "subject": e.subject,
+                "is_recognized": e.is_recognized,
+                "confidence": e.confidence,
+                "recognition_attempts": e.recognition_attempts,
+                "tracking_duration_seconds": e.tracking_duration_seconds,
+                "image_url": e.image_url,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in events
+        ],
+        "camera_id": camera_id,
+        "total": len(events)
     }

@@ -12,6 +12,8 @@ from app.services.state_cache import camera_state_cache
 from app.db.base import async_session
 from app.models.profile import Profile
 from app.models.person_event import PersonEvent
+from app.models.face_detection_event import FaceDetectionEvent
+from app.services.webhook_service import webhook_service
 
 logger = logging.getLogger(__name__)
 
@@ -388,16 +390,28 @@ class EventHandler:
 
                 logger.info(f"Stored PersonEvent for {subject} (total: {profile.total_detections})")
 
+                # Send webhook notification (runs outside DB transaction)
+                try:
+                    await webhook_service.send_person_recognized_event(
+                        event_data=data,
+                        camera_id=camera_id,
+                        subject=subject,
+                        similarity=similarity,
+                        profile_id=str(profile.id)
+                    )
+                except Exception as webhook_error:
+                    logger.error(f"Error sending webhook for person_recognized: {webhook_error}", exc_info=True)
+
         except Exception as e:
             logger.error(f"Error handling person_recognized event: {e}", exc_info=True)
 
     async def handle_face_detected(self, event: Dict[str, Any]):
         """
-        Handle face_detected event (unknown person)
+        Handle face_detected event with tracking information
 
-        - Logs the detection
+        - Saves to database with tracking ID
         - Converts image paths to relative URLs
-        - Can be extended to store in database or trigger alerts
+        - Updates existing tracking session if recognized
         """
         camera_id = event.get("camera_id")
         data = event.get("data", {})
@@ -406,22 +420,104 @@ class EventHandler:
             logger.error("face_detected event missing camera_id")
             return
 
-        confidence = data.get("confidence", 0.0)
+        # Extract tracking information
+        tracking_id = data.get("tracking_id", "")
+        subject = data.get("subject", "unknown")
+        is_recognized = data.get("is_recognized", False)
+        recognition_attempts = data.get("recognition_attempts", 0)
+        tracking_duration = data.get("tracking_duration_seconds", 0.0)
+        is_first_detection = data.get("is_first_detection", True)
+        detection_confidence = data.get("confidence", 0.0)
+        recognition_similarity = data.get("similarity", 0.0)
+        # Use similarity for recognized faces, detection confidence for unknown faces
+        confidence = recognition_similarity if is_recognized else detection_confidence
         detection_count = data.get("detection_count", 0)
 
         # Convert absolute file path to relative URL
         image_url = convert_absolute_path_to_url(data.get("image_url"))
 
-        if image_url:
-            logger.info(f"Unknown face detected at {camera_id} "
-                       f"(confidence: {confidence:.2f}, count: {detection_count}, image: {image_url})")
-        else:
-            logger.info(f"Unknown face detected at {camera_id} "
-                       f"(confidence: {confidence:.2f}, count: {detection_count})")
+        # Log the detection with tracking info
+        logger.info(f"Face detected at {camera_id} "
+                   f"(tracking_id: {tracking_id[:8]}..., "
+                   f"subject: {subject}, "
+                   f"recognized: {is_recognized}, "
+                   f"attempts: {recognition_attempts}/3, "
+                   f"duration: {tracking_duration:.1f}s, "
+                   f"first: {is_first_detection})")
 
-        # Note: These events are real-time only and not stored in database
-        # Frontend can display them in the logs tab via WebSocket
-        # The image_url is now in the correct format for frontend consumption
+        try:
+            async with async_session() as db:
+                # Check if we already have an event for this tracking_id
+                from sqlalchemy import select
+                result = await db.execute(
+                    select(FaceDetectionEvent).where(
+                        FaceDetectionEvent.tracking_id == tracking_id
+                    )
+                )
+                existing_event = result.scalar_one_or_none()
+
+                if existing_event:
+                    # Update existing event with new information
+                    existing_event.subject = subject
+                    existing_event.is_recognized = is_recognized
+                    existing_event.confidence = confidence  # Update with recognition similarity if recognized
+                    existing_event.recognition_attempts = recognition_attempts
+                    existing_event.tracking_duration_seconds = tracking_duration
+                    existing_event.updated_at = datetime.utcnow()
+                    existing_event.worker_metadata = data  # Update full event data
+
+                    logger.info(f"Updated face detection event for tracking_id {tracking_id[:8]}... "
+                              f"(subject: {subject}, recognized: {is_recognized})")
+                else:
+                    # Create new event
+                    face_event = FaceDetectionEvent(
+                        tracking_id=tracking_id,
+                        camera_id=camera_id,
+                        confidence=confidence,
+                        subject=subject,
+                        is_recognized=is_recognized,
+                        recognition_attempts=recognition_attempts,
+                        tracking_duration_seconds=tracking_duration,
+                        is_first_detection=is_first_detection,
+                        image_url=image_url,
+                        worker_metadata=data  # Store full event data
+                    )
+                    db.add(face_event)
+
+                    logger.info(f"Stored face detection event for tracking_id {tracking_id[:8]}...")
+
+                await db.commit()
+
+                # Send webhook notification for face detection
+                # Get profile_id if recognized
+                profile_id = None
+                if is_recognized and subject != "unknown":
+                    try:
+                        profile_result = await db.execute(
+                            select(Profile).where(Profile.compreface_subject_id == subject)
+                        )
+                        profile = profile_result.scalar_one_or_none()
+                        if profile:
+                            profile_id = str(profile.id)
+                    except Exception as profile_error:
+                        logger.warning(f"Could not fetch profile for webhook: {profile_error}")
+
+                # Send webhook (runs outside DB transaction)
+                try:
+                    await webhook_service.send_face_detected_event(
+                        event_data=data,
+                        camera_id=camera_id,
+                        tracking_id=tracking_id,
+                        subject=subject,
+                        is_recognized=is_recognized,
+                        similarity=recognition_similarity,
+                        profile_id=profile_id
+                    )
+                except Exception as webhook_error:
+                    logger.error(f"Error sending webhook for face_detected: {webhook_error}", exc_info=True)
+
+        except Exception as e:
+            logger.error(f"Error handling face_detected event: {e}", exc_info=True)
 
     def get_stats(self) -> Dict[str, Any]:
         """Get event handler statistics"""
