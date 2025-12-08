@@ -157,34 +157,44 @@ class WorkerClient:
         """Update camera configuration in worker by stopping, removing and re-adding it"""
         # Worker doesn't have PUT endpoint, so we stop, remove and re-add
         import asyncio
+        import logging
+        logger = logging.getLogger(__name__)
 
         # Step 1: Stop the camera first to ensure clean removal
         try:
+            logger.info(f"Stopping camera {camera_id} before update...")
             await self.stop_camera(camera_id)
-            # Give it a moment to fully stop
-            await asyncio.sleep(0.2)
+            # CRITICAL FIX: Increase delay to allow full cleanup (GStreamer, CUDA, ONNX resources)
+            await asyncio.sleep(1.0)
+            logger.info(f"Camera {camera_id} stopped successfully")
         except Exception as e:
             # Camera might not be running or might not exist, continue anyway
-            pass
+            logger.warning(f"Failed to stop camera {camera_id}: {e}")
+            await asyncio.sleep(0.5)  # Still wait a bit
 
         # Step 2: Remove the camera
         try:
+            logger.info(f"Removing camera {camera_id}...")
             await self.remove_camera(camera_id)
-            # Give it a moment to fully remove
-            await asyncio.sleep(0.2)
+            # CRITICAL FIX: Increase delay for full resource cleanup (destructors, GPU memory, etc.)
+            await asyncio.sleep(1.5)
+            logger.info(f"Camera {camera_id} removed successfully")
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 # Camera doesn't exist, that's okay - we'll add it
+                logger.info(f"Camera {camera_id} not found (already removed)")
                 pass
             else:
                 # Other errors should propagate
+                logger.error(f"HTTP error removing camera {camera_id}: {e}")
                 raise
         except Exception as e:
             # For other exceptions, log but continue (will fail on add if camera still exists)
-            import logging
-            logging.getLogger(__name__).warning(f"Failed to remove camera {camera_id}: {e}")
+            logger.warning(f"Failed to remove camera {camera_id}: {e}")
+            await asyncio.sleep(1.0)  # Still wait for any partial cleanup
 
         # Step 3: Add with new configuration
+        logger.info(f"Adding camera {camera_id} with updated configuration...")
         return await self.add_camera(config)
 
     async def add_or_update_camera(self, config: WorkerCameraConfig) -> Dict:

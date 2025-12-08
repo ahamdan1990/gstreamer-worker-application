@@ -63,14 +63,14 @@ class WebhookService:
                     profile_details = {
                         "id": str(profile.id),
                         "name": profile.name,
-                        "external_id": profile.external_id,
+                        "external_id": getattr(profile, 'external_id', profile.compreface_subject_id),  # CRITICAL FIX: Use compreface_subject_id if external_id doesn't exist
                         "email": profile.email,
-                        "department": profile.department,
+                        "department": getattr(profile, 'department', None),  # CRITICAL FIX: Handle missing field
                         "tags": profile.tags or [],
-                        "notes": profile.notes,
+                        "notes": getattr(profile, 'notes', None),  # CRITICAL FIX: Handle missing field
                         "total_detections": profile.total_detections,
                         "avg_recognition_similarity": profile.avg_recognition_similarity,
-                        "first_seen_at": profile.first_seen_at.isoformat() if profile.first_seen_at else None,
+                        "first_seen_at": getattr(profile, 'first_seen_at', profile.created_at).isoformat() if getattr(profile, 'first_seen_at', profile.created_at) else None,  # CRITICAL FIX: Use created_at if first_seen_at doesn't exist
                         "last_seen_at": profile.last_seen_at.isoformat() if profile.last_seen_at else None,
                         "last_seen_camera_id": profile.last_seen_camera_id,
                     }
@@ -173,7 +173,7 @@ class WebhookService:
                     profile_details = {
                         "id": str(profile.id),
                         "name": profile.name,
-                        "external_id": profile.external_id,
+                        "external_id": getattr(profile, 'external_id', profile.compreface_subject_id),  # CRITICAL FIX: Use compreface_subject_id if external_id doesn't exist
                         "tags": profile.tags or [],
                     }
 

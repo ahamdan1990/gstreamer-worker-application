@@ -483,7 +483,8 @@ app.add_middleware(
 )
 
 # Mount static files for face crop images
-face_crops_dir = Path(__file__).parent.parent / "face_crops"
+# CRITICAL FIX: Point to gstreamer_worker/face_crops where images are actually saved
+face_crops_dir = Path(__file__).parent.parent.parent / "gstreamer_worker" / "face_crops"
 face_crops_dir.mkdir(exist_ok=True)  # Create directory if it doesn't exist
 app.mount("/face_crops", StaticFiles(directory=str(face_crops_dir)), name="face_crops")
 
