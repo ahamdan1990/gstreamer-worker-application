@@ -148,20 +148,43 @@ class WorkerClient:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/cameras",
-                json=config.model_dump()
+                json=config.model_dump(exclude_none=True)
             )
             response.raise_for_status()
             return response.json()
 
     async def update_camera(self, camera_id: str, config: WorkerCameraConfig) -> Dict:
-        """Update camera configuration in worker by removing and re-adding it"""
-        # Worker doesn't have PUT endpoint, so we remove and re-add
+        """Update camera configuration in worker by stopping, removing and re-adding it"""
+        # Worker doesn't have PUT endpoint, so we stop, remove and re-add
+        import asyncio
+
+        # Step 1: Stop the camera first to ensure clean removal
+        try:
+            await self.stop_camera(camera_id)
+            # Give it a moment to fully stop
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            # Camera might not be running or might not exist, continue anyway
+            pass
+
+        # Step 2: Remove the camera
         try:
             await self.remove_camera(camera_id)
-        except Exception:
-            pass  # Camera might not exist, that's okay
+            # Give it a moment to fully remove
+            await asyncio.sleep(0.2)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                # Camera doesn't exist, that's okay - we'll add it
+                pass
+            else:
+                # Other errors should propagate
+                raise
+        except Exception as e:
+            # For other exceptions, log but continue (will fail on add if camera still exists)
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to remove camera {camera_id}: {e}")
 
-        # Add with new configuration
+        # Step 3: Add with new configuration
         return await self.add_camera(config)
 
     async def add_or_update_camera(self, config: WorkerCameraConfig) -> Dict:

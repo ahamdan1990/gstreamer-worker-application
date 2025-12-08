@@ -329,7 +329,8 @@ bool FaceDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
                     // Create FaceDetection from tracked face
                     FaceDetection detection;
                     detection.bbox = tracked.bbox;
-                    detection.confidence = tracked.is_recognized ? tracked.recognition_confidence : 0.5f;
+                    // CRITICAL FIX: Use actual detection confidence instead of hardcoded 0.5f
+                    detection.confidence = tracked.detection_confidence;
 
                     event_faces.push_back(detection);
                     event_tracking_ids.push_back(tracked.tracking_id);
@@ -1160,6 +1161,7 @@ std::vector<FaceDetection> FaceDetector::filter_tracked_faces(
                 tracked.last_seen = now;
                 tracked.frames_tracked++;
                 tracked.bbox = detection.bbox;  // Update position
+                tracked.detection_confidence = detection.confidence;  // CRITICAL FIX: Update detection confidence
                 break;
             }
         }
@@ -1203,6 +1205,7 @@ void FaceDetector::update_face_tracking(const std::vector<FaceDetection>& detect
             if (iou > face_tracking_iou_threshold_) {
                 // Update existing track
                 tracked.bbox = detection.bbox;
+                tracked.detection_confidence = detection.confidence;  // CRITICAL FIX: Update detection confidence
                 tracked.last_seen = now;
                 tracked.frames_tracked++;
                 already_tracked = true;
@@ -1215,6 +1218,7 @@ void FaceDetector::update_face_tracking(const std::vector<FaceDetection>& detect
             TrackedFace tf;
             tf.tracking_id = generate_tracking_id();
             tf.bbox = detection.bbox;
+            tf.detection_confidence = detection.confidence;  // CRITICAL FIX: Store actual detection confidence
             tf.first_seen = now;
             tf.last_seen = now;
             tf.frames_tracked = 1;

@@ -355,15 +355,22 @@ bool MotionDetector::apply_background_subtraction_cuda(const cv::cuda::GpuMat& d
         double threshold = 255.0 * (1.0 - config_.sensitivity);
         cv::cuda::threshold(d_fg_mask, d_fg_mask, threshold, 255, cv::THRESH_BINARY);
 
-        // Morphological operations (download/upload for now, as CUDA morph ops are limited)
-        cv::Mat h_mask;
-        d_fg_mask.download(h_mask);
+        // CRITICAL FIX Issue #16: GPU morphological operations (eliminates 2-5ms CPU-GPU round trip)
+        // Create and cache morphology filters on first use
+        if (!morph_open_filter_ || !morph_close_filter_) {
+            morph_kernel_ = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+            morph_open_filter_ = cv::cuda::createMorphologyFilter(
+                cv::MORPH_OPEN, d_fg_mask.type(), morph_kernel_
+            );
+            morph_close_filter_ = cv::cuda::createMorphologyFilter(
+                cv::MORPH_CLOSE, d_fg_mask.type(), morph_kernel_
+            );
+        }
 
-        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-        cv::morphologyEx(h_mask, h_mask, cv::MORPH_OPEN, kernel);
-        cv::morphologyEx(h_mask, h_mask, cv::MORPH_CLOSE, kernel);
-
-        d_fg_mask.upload(h_mask);
+        // Apply morphological operations directly on GPU (zero CPU-GPU copies!)
+        cv::cuda::GpuMat d_temp;
+        morph_open_filter_->apply(d_fg_mask, d_temp);
+        morph_close_filter_->apply(d_temp, d_fg_mask);
 
         return true;
 

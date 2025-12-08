@@ -211,6 +211,9 @@ private:
         std::chrono::steady_clock::time_point last_seen;
         int frames_tracked = 0;
 
+        // Detection confidence from face detector model
+        float detection_confidence = 0.0f;    // CRITICAL FIX: Actual detection confidence [0-1]
+
         // Identity information from CompreFace
         std::string subject = "unknown";      // Recognized person name/ID
         float recognition_confidence = 0.0f;  // Recognition similarity score

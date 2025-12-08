@@ -140,6 +140,11 @@ private:
     cv::Ptr<cv::cuda::Filter> gaussian_filter_;
     int gaussian_filter_kernel_size_ = 0;
 
+    // Cached CUDA Morphology filters (CRITICAL FIX: Eliminate CPU-GPU round trips)
+    cv::Ptr<cv::cuda::Filter> morph_open_filter_;
+    cv::Ptr<cv::cuda::Filter> morph_close_filter_;
+    cv::Mat morph_kernel_;
+
     // Frame differencing (for FRAME_DIFF algorithm)
     cv::Mat prev_frame_;
     cv::cuda::GpuMat d_prev_frame_;

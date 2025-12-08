@@ -373,12 +373,12 @@ bool CameraStream::create_pipeline() {
         if (config_.motion_detection.enabled && motion_detector_) {
             appsink_ = gst_bin_get_by_name(GST_BIN(pipeline_), "motion_sink");
             if (appsink_) {
-                // Set appsink properties (CRITICAL FIX Issue #15: Increase buffer size)
+                // Set appsink properties (CRITICAL FIX Issue #15/#16: Increase buffer size)
                 g_object_set(G_OBJECT(appsink_),
                            "emit-signals", TRUE,   // Use signals (more stable than callbacks)
                            "sync", FALSE,          // Don't sync with clock
                            "drop", TRUE,           // Drop frames if processing is slow
-                           "max-buffers", 5,       // Increased from 2 to 5 for better throughput
+                           "max-buffers", 20,      // Increased from 5 to 20 to prevent freeze with motion+face detection
                            nullptr);
 
                 // Connect to new-sample signal - QUEUE WORK, DON'T EXECUTE DIRECTLY

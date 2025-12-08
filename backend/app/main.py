@@ -82,6 +82,9 @@ async def start_worker_process():
         if settings.API_HOST == "0.0.0.0":
             fastapi_url = f"http://192.168.0.24:{settings.API_PORT}"
 
+        # Set working directory to gstreamer_worker for correct model paths
+        worker_cwd = worker_path.parent.parent  # Go up from build/ to gstreamer_worker/
+
         worker_process = subprocess.Popen(
             [
                 str(worker_path),
@@ -91,7 +94,8 @@ async def start_worker_process():
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            cwd=str(worker_cwd)  # CRITICAL FIX: Set working directory for model paths
         )
 
         logger.info(f"Worker process started with PID: {worker_process.pid}")
@@ -112,20 +116,30 @@ async def start_worker_process():
         output_thread.start()
 
         # Wait for worker to become healthy (with timeout)
-        max_wait = 10  # seconds
+        max_wait = 30  # Increased to 30 seconds to allow for TensorRT compilation
         start_time = time.time()
+        healthy = False
+
         while time.time() - start_time < max_wait:
             try:
                 worker = WorkerClient(base_url=settings.WORKER_API_URL)
                 if await worker.health_check():
-                    logger.info("Worker is healthy and ready")
-                    return True
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
+                    logger.info("Worker health check passed")
+                    healthy = True
+                    break
+            except Exception as e:
+                logger.debug(f"Health check attempt failed: {e}")
+            await asyncio.sleep(1.0)
 
-        logger.warning("Worker started but health check timed out")
-        return True  # Process started, even if health check failed
+        if not healthy:
+            logger.warning("Worker started but health check timed out")
+            return True  # Process started, even if health check failed
+
+        # Additional wait for full initialization (TensorRT compilation, model loading)
+        logger.info("Waiting additional 5 seconds for worker full initialization...")
+        await asyncio.sleep(5)
+        logger.info("Worker is healthy and ready")
+        return True
 
     except Exception as e:
         logger.error(f"Failed to start worker process: {e}")
@@ -268,49 +282,69 @@ async def sync_cameras_to_worker():
 
                 # Sync each camera to worker
                 for camera in cameras:
-                    try:
-                        # Build motion detection config if enabled
-                        motion_config = None
-                        if camera.motion_detection_enabled and camera.motion_detection_config:
-                            from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
-                            motion_config = WorkerMotionConfig(**camera.motion_detection_config)
+                    # Retry logic for transient initialization errors
+                    max_retries = 3
+                    retry_delay = 2  # seconds
 
-                        # Build face detection config if enabled
-                        face_config = None
-                        if camera.face_detection_enabled and camera.face_detection_config:
-                            from app.services.worker_client import FaceDetectionConfig as WorkerFaceConfig
-                            face_config = WorkerFaceConfig(**camera.face_detection_config)
+                    for attempt in range(max_retries):
+                        try:
+                            # Build motion detection config if enabled
+                            motion_config = None
+                            if camera.motion_detection_enabled and camera.motion_detection_config:
+                                from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
+                                motion_config = WorkerMotionConfig(**camera.motion_detection_config)
 
-                        worker_config = WorkerCameraConfig(
-                            camera_id=camera.camera_id,
-                            rtsp_url=camera.rtsp_url,
-                            username=camera.username,
-                            password=camera.password,
-                            protocols=camera.protocols,
-                            latency_ms=camera.latency_ms,
-                            target_fps=camera.target_fps,
-                            enable_display=camera.enable_display,
-                            use_nvidia_decoder=camera.use_nvidia_decoder,
-                            motion_detection=motion_config,
-                            face_detection=face_config
-                        )
-                        # Use add_or_update for idempotent operation
-                        await worker.add_or_update_camera(worker_config)
-                        logger.info(f"Synced camera {camera.camera_id} to worker")
-                        synced_count += 1
+                            # Build face detection config if enabled
+                            face_config = None
+                            if camera.face_detection_enabled and camera.face_detection_config:
+                                from app.services.worker_client import FaceDetectionConfig as WorkerFaceConfig
+                                face_config = WorkerFaceConfig(**camera.face_detection_config)
 
-                        # If camera was running before, start it
-                        if camera.is_running:
-                            # Give worker a moment to fully register the camera
-                            await asyncio.sleep(0.5)
-                            logger.info(f"Restarting camera {camera.camera_id} (was running before)")
-                            await worker.start_camera(camera.camera_id)
-                            started_count += 1
-                    except Exception as e:
-                        logger.error(f"Failed to sync camera {camera.camera_id}: {e}", exc_info=True)
-                        # Try to extract more details from HTTP errors
-                        if hasattr(e, 'response') and hasattr(e.response, 'text'):
-                            logger.error(f"Worker response: {e.response.text}")
+                            worker_config = WorkerCameraConfig(
+                                camera_id=camera.camera_id,
+                                rtsp_url=camera.rtsp_url,
+                                username=camera.username,
+                                password=camera.password,
+                                protocols=camera.protocols,
+                                latency_ms=camera.latency_ms,
+                                target_fps=camera.target_fps,
+                                enable_display=camera.enable_display,
+                                use_nvidia_decoder=camera.use_nvidia_decoder,
+                                motion_detection=motion_config,
+                                face_detection=face_config
+                            )
+                            # Use add_or_update for idempotent operation
+                            await worker.add_or_update_camera(worker_config)
+                            logger.info(f"Synced camera {camera.camera_id} to worker")
+                            synced_count += 1
+
+                            # If camera was running before, start it
+                            if camera.is_running:
+                                # Give worker a moment to fully register the camera
+                                await asyncio.sleep(0.5)
+                                logger.info(f"Restarting camera {camera.camera_id} (was running before)")
+                                await worker.start_camera(camera.camera_id)
+                                started_count += 1
+
+                            # Success - break out of retry loop
+                            break
+
+                        except Exception as e:
+                            error_msg = str(e)
+                            is_initialization_error = "shutting down" in error_msg.lower() or "initializing" in error_msg.lower()
+
+                            if attempt < max_retries - 1 and is_initialization_error:
+                                logger.warning(f"Camera {camera.camera_id} sync failed (attempt {attempt + 1}/{max_retries}), "
+                                             f"likely worker still initializing. Retrying in {retry_delay}s...")
+                                await asyncio.sleep(retry_delay)
+                                retry_delay *= 2  # Exponential backoff
+                                continue
+                            else:
+                                logger.error(f"Failed to sync camera {camera.camera_id}: {e}", exc_info=True)
+                                # Try to extract more details from HTTP errors
+                                if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                                    logger.error(f"Worker response: {e.response.text}")
+                                break  # Exit retry loop on final failure or non-initialization error
 
                 break  # Only need one db session
 
