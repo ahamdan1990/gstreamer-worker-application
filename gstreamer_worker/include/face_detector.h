@@ -222,6 +222,7 @@ private:
         bool crop_saved = false;              // Whether high-quality crop has been saved
         int recognition_attempts = 0;         // Number of recognition attempts (for retry logic)
         int failed_recognitions = 0;          // Number of failed recognition attempts
+        std::string latest_face_crop_path;    // Path to the latest saved face crop (includes retry images)
 
         // Event emission tracking
         bool event_emitted = false;           // Whether we've emitted an event for this tracking session

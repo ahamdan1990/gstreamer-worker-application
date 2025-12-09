@@ -350,16 +350,42 @@ bool FaceDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
         }
 
         // Save face crops for NEW faces only (first detection)
+        // and populate event_face_crop_paths from tracked faces' latest crop path
+        if (!event_faces.empty()) {
+            std::lock_guard<std::mutex> lock(face_mutex_);
+            for (size_t i = 0; i < event_faces.size(); i++) {
+                // Find the corresponding tracked face and use its latest_face_crop_path
+                for (const auto& tracked : tracked_faces_) {
+                    if (event_tracking_ids[i] == tracked.tracking_id) {
+                        if (!tracked.latest_face_crop_path.empty()) {
+                            event_face_crop_paths[i] = tracked.latest_face_crop_path;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Save initial crops for NEW faces (first detection)
         if (!event_faces.empty()) {
             for (size_t i = 0; i < event_faces.size(); i++) {
-                if (event_is_first_detection[i]) {
-                    // Save crop for this face
+                if (event_is_first_detection[i] && event_face_crop_paths[i].empty()) {
+                    // Save crop for this face (only if not already saved)
                     std::vector<FaceDetection> single_face = {event_faces[i]};
                     auto crop_paths = save_face_crops(d_frame, single_face, std::chrono::duration<double>(
                         std::chrono::system_clock::now().time_since_epoch()
                     ).count());
                     if (!crop_paths.empty()) {
                         event_face_crop_paths[i] = crop_paths[0];
+
+                        // Also store in tracked face's latest_face_crop_path
+                        std::lock_guard<std::mutex> lock(face_mutex_);
+                        for (auto& tracked : tracked_faces_) {
+                            if (event_tracking_ids[i] == tracked.tracking_id) {
+                                tracked.latest_face_crop_path = crop_paths[0];
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -1098,7 +1124,7 @@ std::vector<std::string> FaceDetector::save_face_crops(
                 }
             }
 
-            // Increment recognition attempts for this tracked face
+            // Increment recognition attempts for this tracked face and store crop path
             {
                 std::lock_guard<std::mutex> lock(face_mutex_);
                 for (auto& tracked : tracked_faces_) {
@@ -1106,6 +1132,7 @@ std::vector<std::string> FaceDetector::save_face_crops(
                     if (iou > face_tracking_iou_threshold_) {
                         tracked.crop_saved = true;
                         tracked.recognition_attempts++;
+                        tracked.latest_face_crop_path = filename.str();  // Store the latest crop path
                         std::cout << "[FaceDetector:" << camera_id_ << "] Recognition attempt "
                                   << tracked.recognition_attempts << " sent for this person" << std::endl;
                         break;

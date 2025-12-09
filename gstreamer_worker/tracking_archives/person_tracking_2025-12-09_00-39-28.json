@@ -1,0 +1,54 @@
+{
+  "persons": [
+    {
+      "avg_similarity": 0.9787870645523071,
+      "camera_appearances": {
+        "Experience Center": {
+          "avg_confidence": 0.9828179478645325,
+          "camera_id": "Experience Center",
+          "detection_count": 5,
+          "dwell_time_seconds": 6497.0,
+          "first_seen": 1764253819,
+          "last_seen": 1764260316
+        },
+        "front_door": {
+          "avg_confidence": 0.9774433374404907,
+          "camera_id": "front_door",
+          "detection_count": 15,
+          "dwell_time_seconds": 63903.0,
+          "first_seen": 1764168044,
+          "last_seen": 1764231947
+        }
+      },
+      "first_seen_global": 1764168044,
+      "last_seen_global": 1764260316,
+      "last_similarity": 0.9886299967765808,
+      "subject": "ashamdan1990@gmail.com",
+      "total_detections": 20,
+      "total_dwell_time_seconds": 70400.0
+    },
+    {
+      "avg_similarity": 0.9759549498558044,
+      "camera_appearances": {
+        "front_door": {
+          "avg_confidence": 0.9759549498558044,
+          "camera_id": "front_door",
+          "detection_count": 14,
+          "dwell_time_seconds": 61199.0,
+          "first_seen": 1764170701,
+          "last_seen": 1764231900
+        }
+      },
+      "first_seen_global": 1764170701,
+      "last_seen_global": 1764231900,
+      "last_similarity": 0.9955400228500366,
+      "subject": "bob@gmail.com",
+      "total_detections": 14,
+      "total_dwell_time_seconds": 61199.0
+    }
+  ],
+  "reset_time": 1765233568,
+  "total_events": 20,
+  "total_persons_tracked": 2,
+  "version": "1.0"
+}
