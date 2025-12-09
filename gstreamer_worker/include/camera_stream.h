@@ -3,9 +3,13 @@
 
 #include "config.h"
 #include "types.h"
+#include "person_tracker.h"
+#include "callback_queue.h"
 
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
+#include <cairo/cairo.h>
+#include <opencv2/core.hpp>
 #include <memory>
 #include <atomic>
 #include <thread>
@@ -17,6 +21,7 @@ namespace gstreamer_worker {
 
 // Forward declarations
 class MotionDetector;
+class FaceDetector;
 
 /**
  * @brief Callback for state changes
@@ -32,6 +37,11 @@ using ErrorCallback = std::function<void(const std::string& camera_id, const std
  * @brief Callback for motion events
  */
 using MotionEventCallback = std::function<void(const MotionEvent& event)>;
+
+/**
+ * @brief Callback for face detection events
+ */
+using FaceEventCallback = std::function<void(const FaceEvent& event)>;
 
 /**
  * @brief Individual camera stream handler with production-grade error handling
@@ -52,12 +62,16 @@ public:
      * @param on_state_changed Callback for state changes
      * @param on_error Callback for errors
      * @param on_motion Callback for motion events
+     * @param on_face Callback for face detection events
+     * @param person_tracker Optional person tracker for enterprise tracking
      */
     CameraStream(
         const CameraConfig& config,
         StateCallback on_state_changed = nullptr,
         ErrorCallback on_error = nullptr,
-        MotionEventCallback on_motion = nullptr
+        MotionEventCallback on_motion = nullptr,
+        FaceEventCallback on_face = nullptr,
+        PersonTracker* person_tracker = nullptr
     );
 
     /**
@@ -104,6 +118,11 @@ public:
     std::string get_camera_id() const { return config_.camera_id; }
 
     /**
+     * @brief Get camera configuration
+     */
+    const CameraConfig& get_config() const { return config_; }
+
+    /**
      * @brief Enable or disable motion detection at runtime
      */
     void enable_motion_detection(bool enable);
@@ -118,6 +137,21 @@ public:
      */
     void update_motion_config(const MotionDetectionConfig& config);
 
+    /**
+     * @brief Enable or disable face detection at runtime
+     */
+    void enable_face_detection(bool enable);
+
+    /**
+     * @brief Check if face detection is enabled
+     */
+    bool is_face_detection_enabled() const;
+
+    /**
+     * @brief Update face detection configuration
+     */
+    void update_face_config(const FaceDetectionConfig& config);
+
 private:
     // Configuration
     CameraConfig config_;
@@ -127,16 +161,37 @@ private:
     StateCallback on_state_changed_;
     ErrorCallback on_error_;
     MotionEventCallback on_motion_;
+    FaceEventCallback on_face_;
 
     // GStreamer components
     GstElement* pipeline_ = nullptr;
     GstElement* appsink_ = nullptr;  // For motion detection frame capture
+    GstElement* viz_appsink_ = nullptr;  // For visualization overlay (legacy)
+    GstElement* cairo_overlay_ = nullptr;  // For drawing face bboxes on live feed
     GstBus* bus_ = nullptr;
     GMainLoop* loop_ = nullptr;
+
+    // Thread-safe callback queue (prevents race conditions from GStreamer callbacks)
+    std::unique_ptr<CallbackQueue> callback_queue_;
 
     // Motion detection
     std::unique_ptr<MotionDetector> motion_detector_;
     std::atomic<bool> motion_detection_enabled_;
+
+    // Face detection
+    std::unique_ptr<FaceDetector> face_detector_;
+    std::atomic<bool> face_detection_enabled_;
+
+    // Visualization
+    std::mutex viz_mutex_;
+    std::vector<FaceDetection> latest_detections_;
+    int viz_frame_width_ = 0;
+    int viz_frame_height_ = 0;
+
+    // Motion-triggered face detection
+    std::atomic<bool> motion_recently_detected_{false};
+    std::chrono::steady_clock::time_point last_motion_time_;
+    std::mutex motion_mutex_;
 
     // State management
     std::atomic<StreamState> state_;
@@ -148,11 +203,13 @@ private:
     std::atomic<int> reconnect_attempts_;
     std::atomic<double> reconnect_delay_;
     std::unique_ptr<std::thread> reconnect_timer_;
+    std::atomic<bool> reconnect_timer_running_{false};
 
     // Health monitoring
     std::chrono::steady_clock::time_point last_frame_time_;
     std::atomic<int> consecutive_errors_;
     std::unique_ptr<std::thread> health_check_timer_;
+    std::atomic<bool> health_check_timer_running_{false};
 
     // Metrics
     mutable std::mutex metrics_mutex_;
@@ -213,6 +270,37 @@ private:
      * @brief Process frame for motion detection
      */
     void process_motion_frame(GstSample* sample);
+
+    /**
+     * @brief Process frame for visualization overlay
+     */
+    void process_visualization_frame(GstSample* sample);
+
+    /**
+     * @brief Draw face detections on frame
+     */
+    void draw_face_detections(cv::Mat& frame, const std::vector<FaceDetection>& detections);
+
+    /**
+     * @brief Draw face detections using Cairo on live video feed
+     */
+    void draw_cairo_overlay(cairo_t* cr);
+
+    /**
+     * @brief Start/stop reconnect timer thread
+     */
+    void start_reconnect_timer();
+    void stop_reconnect_timer();
+
+    /**
+     * @brief Start/stop health check timer thread
+     */
+    void stop_health_check_timer();
+
+    /**
+     * @brief Process pending callback queue tasks
+     */
+    void process_pending_callbacks();
 };
 
 } // namespace gstreamer_worker

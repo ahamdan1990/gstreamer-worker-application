@@ -27,7 +27,8 @@ static MotionAlgorithm string_to_motion_algorithm(const std::string& str) {
 bool ConfigLoader::load_from_file(
     const std::string& file_path,
     PipelineManagerConfig& manager_config,
-    std::vector<CameraConfig>& cameras
+    std::vector<CameraConfig>& cameras,
+    PersonTrackerConfig& person_tracking_config
 ) {
     try {
         // Read file
@@ -41,7 +42,7 @@ bool ConfigLoader::load_from_file(
         json j;
         file >> j;
 
-        return load_from_string(j.dump(), manager_config, cameras);
+        return load_from_string(j.dump(), manager_config, cameras, person_tracking_config);
 
     } catch (const json::exception& e) {
         LOG_ERROR("ConfigLoader", std::string("JSON parsing error: ") + e.what());
@@ -150,7 +151,8 @@ bool ConfigLoader::save_to_file(
 bool ConfigLoader::load_from_string(
     const std::string& json_str,
     PipelineManagerConfig& manager_config,
-    std::vector<CameraConfig>& cameras
+    std::vector<CameraConfig>& cameras,
+    PersonTrackerConfig& person_tracking_config
 ) {
     try {
         json j = json::parse(json_str);
@@ -167,6 +169,51 @@ bool ConfigLoader::load_from_string(
             }
             if (mgr.contains("metrics_interval")) {
                 manager_config.metrics_interval = mgr["metrics_interval"].get<double>();
+            }
+        }
+
+        // Parse person tracking config
+        if (j.contains("person_tracking")) {
+            const auto& pt = j["person_tracking"];
+
+            if (pt.contains("enabled") && !pt["enabled"].get<bool>()) {
+                // Person tracking disabled, use defaults
+                person_tracking_config = PersonTrackerConfig();
+            } else {
+                // Parse person tracking settings
+                if (pt.contains("presence_timeout_seconds")) {
+                    person_tracking_config.presence_timeout_seconds = pt["presence_timeout_seconds"].get<double>();
+                }
+                if (pt.contains("same_camera_cooldown_seconds")) {
+                    person_tracking_config.same_camera_cooldown_seconds = pt["same_camera_cooldown_seconds"].get<double>();
+                }
+                if (pt.contains("max_detections_per_person")) {
+                    person_tracking_config.max_detections_per_person = pt["max_detections_per_person"].get<int>();
+                }
+                if (pt.contains("enable_cross_camera_tracking")) {
+                    person_tracking_config.enable_cross_camera_tracking = pt["enable_cross_camera_tracking"].get<bool>();
+                }
+                if (pt.contains("enable_persistence")) {
+                    person_tracking_config.enable_persistence = pt["enable_persistence"].get<bool>();
+                }
+                if (pt.contains("persistence_path")) {
+                    person_tracking_config.persistence_path = pt["persistence_path"].get<std::string>();
+                }
+                if (pt.contains("enable_daily_reset")) {
+                    person_tracking_config.enable_daily_reset = pt["enable_daily_reset"].get<bool>();
+                }
+                if (pt.contains("daily_reset_hour")) {
+                    person_tracking_config.daily_reset_hour = pt["daily_reset_hour"].get<int>();
+                }
+                if (pt.contains("archive_path")) {
+                    person_tracking_config.archive_path = pt["archive_path"].get<std::string>();
+                }
+
+                // Validate person tracking config
+                if (!person_tracking_config.validate()) {
+                    LOG_ERROR("ConfigLoader", "Invalid person tracking configuration");
+                    person_tracking_config = PersonTrackerConfig();  // Reset to defaults
+                }
             }
         }
 
@@ -310,6 +357,158 @@ bool ConfigLoader::load_from_string(
                     }
                 }
 
+                // Face detection configuration
+                if (cam_json.contains("face_detection")) {
+                    const auto& face_json = cam_json["face_detection"];
+
+                    if (face_json.contains("enabled")) {
+                        cam.face_detection.enabled = face_json["enabled"].get<bool>();
+                    }
+                    if (face_json.contains("model_path")) {
+                        cam.face_detection.model_path = face_json["model_path"].get<std::string>();
+                    }
+                    if (face_json.contains("input_size")) {
+                        cam.face_detection.input_size = face_json["input_size"].get<int>();
+                    }
+                    if (face_json.contains("confidence_threshold")) {
+                        cam.face_detection.confidence_threshold = face_json["confidence_threshold"].get<float>();
+                    }
+                    if (face_json.contains("nms_threshold")) {
+                        cam.face_detection.nms_threshold = face_json["nms_threshold"].get<float>();
+                    }
+                    if (face_json.contains("frame_skip")) {
+                        cam.face_detection.frame_skip = face_json["frame_skip"].get<int>();
+                    }
+                    if (face_json.contains("max_frame_width")) {
+                        cam.face_detection.max_frame_width = face_json["max_frame_width"].get<int>();
+                    }
+                    if (face_json.contains("max_frame_height")) {
+                        cam.face_detection.max_frame_height = face_json["max_frame_height"].get<int>();
+                    }
+                    if (face_json.contains("min_face_size")) {
+                        cam.face_detection.min_face_size = face_json["min_face_size"].get<float>();
+                    }
+                    if (face_json.contains("max_faces")) {
+                        cam.face_detection.max_faces = face_json["max_faces"].get<int>();
+                    }
+                    if (face_json.contains("required_frames")) {
+                        cam.face_detection.required_frames = face_json["required_frames"].get<int>();
+                    }
+                    if (face_json.contains("cooldown_seconds")) {
+                        cam.face_detection.cooldown_seconds = face_json["cooldown_seconds"].get<double>();
+                    }
+                    if (face_json.contains("use_tensorrt")) {
+                        cam.face_detection.use_tensorrt = face_json["use_tensorrt"].get<bool>();
+                    }
+                    if (face_json.contains("use_cuda")) {
+                        cam.face_detection.use_cuda = face_json["use_cuda"].get<bool>();
+                    }
+                    if (face_json.contains("max_batch_size")) {
+                        cam.face_detection.max_batch_size = face_json["max_batch_size"].get<int>();
+                    }
+
+                    // Face saving configuration (for verification and CompreFace integration)
+                    if (face_json.contains("save_faces")) {
+                        cam.face_detection.save_faces = face_json["save_faces"].get<bool>();
+                    }
+                    if (face_json.contains("save_path")) {
+                        cam.face_detection.save_path = face_json["save_path"].get<std::string>();
+                    }
+                    if (face_json.contains("save_margin")) {
+                        cam.face_detection.save_margin = face_json["save_margin"].get<float>();
+                    }
+                    if (face_json.contains("min_save_confidence")) {
+                        cam.face_detection.min_save_confidence = face_json["min_save_confidence"].get<float>();
+                    }
+                    if (face_json.contains("max_saves_per_event")) {
+                        cam.face_detection.max_saves_per_event = face_json["max_saves_per_event"].get<int>();
+                    }
+
+                    // Blur detection configuration
+                    if (face_json.contains("enable_blur_detection")) {
+                        cam.face_detection.enable_blur_detection = face_json["enable_blur_detection"].get<bool>();
+                    }
+                    if (face_json.contains("min_laplacian_variance")) {
+                        cam.face_detection.min_laplacian_variance = face_json["min_laplacian_variance"].get<float>();
+                    }
+                    if (face_json.contains("blur_kernel_size")) {
+                        cam.face_detection.blur_kernel_size = face_json["blur_kernel_size"].get<int>();
+                    }
+
+                    // Motion-triggered detection configuration
+                    if (face_json.contains("motion_triggered_detection")) {
+                        cam.face_detection.motion_triggered_detection = face_json["motion_triggered_detection"].get<bool>();
+                    }
+                    if (face_json.contains("motion_detection_cooldown")) {
+                        cam.face_detection.motion_detection_cooldown = face_json["motion_detection_cooldown"].get<float>();
+                    }
+
+                    // CompreFace configuration
+                    if (face_json.contains("enable_compreface")) {
+                        cam.face_detection.enable_compreface = face_json["enable_compreface"].get<bool>();
+                    }
+                    if (face_json.contains("compreface_url")) {
+                        cam.face_detection.compreface_url = face_json["compreface_url"].get<std::string>();
+                    }
+                    if (face_json.contains("compreface_api_key")) {
+                        cam.face_detection.compreface_api_key = face_json["compreface_api_key"].get<std::string>();
+                    }
+                    if (face_json.contains("compreface_subject")) {
+                        cam.face_detection.compreface_subject = face_json["compreface_subject"].get<std::string>();
+                    }
+                    if (face_json.contains("compreface_similarity_threshold")) {
+                        cam.face_detection.compreface_similarity_threshold = face_json["compreface_similarity_threshold"].get<float>();
+                    }
+                    if (face_json.contains("compreface_timeout_ms")) {
+                        cam.face_detection.compreface_timeout_ms = face_json["compreface_timeout_ms"].get<int>();
+                    }
+                    if (face_json.contains("compreface_max_queue_size")) {
+                        cam.face_detection.compreface_max_queue_size = face_json["compreface_max_queue_size"].get<int>();
+                    }
+
+                    // Visualization configuration
+                    if (face_json.contains("enable_visualization")) {
+                        cam.face_detection.enable_visualization = face_json["enable_visualization"].get<bool>();
+                    }
+                    if (face_json.contains("draw_landmarks")) {
+                        cam.face_detection.draw_landmarks = face_json["draw_landmarks"].get<bool>();
+                    }
+                    if (face_json.contains("draw_confidence")) {
+                        cam.face_detection.draw_confidence = face_json["draw_confidence"].get<bool>();
+                    }
+                    if (face_json.contains("box_thickness")) {
+                        cam.face_detection.box_thickness = face_json["box_thickness"].get<int>();
+                    }
+                    if (face_json.contains("font_scale")) {
+                        cam.face_detection.font_scale = face_json["font_scale"].get<float>();
+                    }
+
+                    // ROI configuration (optional)
+                    if (face_json.contains("roi")) {
+                        const auto& roi_json = face_json["roi"];
+                        if (roi_json.contains("x")) {
+                            cam.face_detection.roi.x = roi_json["x"].get<int>();
+                        }
+                        if (roi_json.contains("y")) {
+                            cam.face_detection.roi.y = roi_json["y"].get<int>();
+                        }
+                        if (roi_json.contains("width")) {
+                            cam.face_detection.roi.width = roi_json["width"].get<int>();
+                        }
+                        if (roi_json.contains("height")) {
+                            cam.face_detection.roi.height = roi_json["height"].get<int>();
+                        }
+                    }
+
+                    // Validate face detection config
+                    if (!cam.face_detection.validate()) {
+                        LOG_WARNING("ConfigLoader",
+                            "Invalid face detection config for camera " + cam.camera_id +
+                            ", disabling face detection");
+                        cam.face_detection.enabled = false;
+                    }
+                }
+
                 // Validate
                 if (!cam.validate()) {
                     LOG_ERROR("ConfigLoader", "Invalid camera configuration: " + cam.camera_id);
@@ -337,8 +536,9 @@ bool ConfigLoader::validate_config_file(const std::string& file_path) {
     try {
         PipelineManagerConfig manager_config;
         std::vector<CameraConfig> cameras;
+        PersonTrackerConfig person_tracking_config;
 
-        return load_from_file(file_path, manager_config, cameras);
+        return load_from_file(file_path, manager_config, cameras, person_tracking_config);
 
     } catch (const std::exception& e) {
         LOG_ERROR("ConfigLoader", std::string("Validation error: ") + e.what());

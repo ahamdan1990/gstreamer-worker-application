@@ -53,6 +53,10 @@ class Camera(Base):
     motion_detection_enabled = Column(Boolean, default=False)
     motion_detection_config = Column(JSON)  # Full motion detection configuration
 
+    # Face Detection Configuration (stored as JSON)
+    face_detection_enabled = Column(Boolean, default=False)
+    face_detection_config = Column(JSON)  # Full face detection configuration (37 parameters)
+
     # Status
     enabled = Column(Boolean, default=True)
     state = Column(String(50), default="STOPPED")  # STOPPED, STARTING, RUNNING, ERROR, RECONNECTING
@@ -70,6 +74,15 @@ class Camera(Base):
 
     # Relationships
     events = relationship("Event", back_populates="camera", cascade="all, delete-orphan")
+
+    @property
+    def motion_detection(self):
+        """Combine motion_detection_enabled and motion_detection_config into a single dict"""
+        if self.motion_detection_config:
+            config = dict(self.motion_detection_config)
+            config['enabled'] = self.motion_detection_enabled
+            return config
+        return {'enabled': self.motion_detection_enabled} if self.motion_detection_enabled else None
 
     def __repr__(self):
         return f"<Camera(camera_id={self.camera_id}, state={self.state})>"

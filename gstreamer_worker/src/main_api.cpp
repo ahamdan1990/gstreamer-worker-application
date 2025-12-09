@@ -1,5 +1,9 @@
 #include "pipeline_manager.h"
 #include "api_server.h"
+#include "websocket_server.h"
+#include "event_broadcaster.h"
+#include "person_tracker.h"
+#include "config_loader.h"
 #include "logger.h"
 
 #include <iostream>
@@ -15,6 +19,9 @@ using namespace gstreamer_worker;
 // Global flag for graceful shutdown
 static std::atomic<bool> g_shutdown_requested(false);
 
+// Global event broadcaster (needed for PersonTracker callback)
+static std::shared_ptr<EventBroadcaster> g_broadcaster;
+
 // Signal handler for Ctrl+C
 void signal_handler(int signal) {
     if (signal == SIGINT || signal == SIGTERM) {
@@ -25,12 +32,115 @@ void signal_handler(int signal) {
 
 // State change callback
 void on_state_changed(const std::string& camera_id, StreamState state) {
-    LOG_INFO("main", "Camera " + camera_id + " state: " + stream_state_to_string(state));
+    std::string state_str = stream_state_to_string(state);
+    LOG_INFO("main", "Camera " + camera_id + " state: " + state_str);
+
+    // Broadcast state change via EventBroadcaster
+    if (g_broadcaster) {
+        g_broadcaster->emit_log("INFO", "CameraStream",
+                               "State changed to " + state_str, camera_id);
+    }
 }
 
 // Error callback
 void on_error(const std::string& camera_id, const std::string& error) {
     LOG_ERROR("main", "Camera " + camera_id + " error: " + error);
+
+    // Broadcast error via EventBroadcaster
+    if (g_broadcaster) {
+        g_broadcaster->emit_log("ERROR", "CameraStream", error, camera_id);
+    }
+}
+
+// Motion detection callback - broadcasts via EventBroadcaster
+void on_motion_detected(const MotionEvent& event) {
+    // Log motion event with details
+    LOG_DEBUG("main", "Motion detected on camera " + event.camera_id +
+             ": area=" + std::to_string(event.motion_area) + "px, " +
+             "contours=" + std::to_string(event.num_contours));
+
+    // Broadcast to WebSocket clients for real-time monitoring
+    if (g_broadcaster) {
+        g_broadcaster->emit_motion_detected(
+            event.camera_id,
+            event.motion_area,
+            event.num_contours,
+            event.confidence
+        );
+
+        // Also send detailed log
+        g_broadcaster->emit_log("DEBUG", "MotionDetector",
+                               "Motion detected: area=" + std::to_string(event.motion_area) +
+                               "px, contours=" + std::to_string(event.num_contours),
+                               event.camera_id);
+    }
+}
+
+// Face detection callback - broadcasts via EventBroadcaster
+void on_face_detected(const FaceEvent& event) {
+    // Log face detection event with detailed information
+    if (event.num_faces > 0) {
+        std::string log_msg = "Face detected: " + std::to_string(event.num_faces) + " face(s), " +
+                             "confidence=" + std::to_string(event.faces[0].confidence * 100.0) + "%, " +
+                             "bbox=[" + std::to_string(static_cast<int>(event.faces[0].bbox.x)) + "," +
+                             std::to_string(static_cast<int>(event.faces[0].bbox.y)) + " " +
+                             std::to_string(static_cast<int>(event.faces[0].bbox.width)) + "x" +
+                             std::to_string(static_cast<int>(event.faces[0].bbox.height)) + "]";
+
+        LOG_INFO("main", "Camera " + event.camera_id + ": " + log_msg);
+
+         // Broadcast to WebSocket clients for real-time monitoring
+        if (g_broadcaster) {
+            // Emit event for each face with its tracking information
+            for (int i = 0; i < event.num_faces; i++) {
+                std::string tracking_id = i < event.tracking_ids.size() ? event.tracking_ids[i] : "";
+                std::string subject = i < event.subjects.size() ? event.subjects[i] : "unknown";
+                bool is_recognized = i < event.is_recognized.size() ? event.is_recognized[i] : false;
+                float recognition_similarity = i < event.recognition_similarity.size() ? event.recognition_similarity[i] : 0.0f;
+                int recognition_attempts = i < event.recognition_attempts.size() ? event.recognition_attempts[i] : 0;
+                double tracking_duration = i < event.tracking_durations.size() ? event.tracking_durations[i] : 0.0;
+                bool is_first_detection = i < event.is_first_detection.size() ? event.is_first_detection[i] : true;
+                std::vector<std::string> face_crop_path = {i < event.face_crop_paths.size() ? event.face_crop_paths[i] : ""};
+
+                g_broadcaster->emit_face_detected(
+                    event.camera_id,
+                    event.faces[i].confidence,
+                    1,  // detection_count is 1 per face
+                    face_crop_path,
+                    tracking_id,
+                    subject,
+                    is_recognized,
+                    recognition_similarity,
+                    recognition_attempts,
+                    tracking_duration,
+                    is_first_detection
+                );
+            }
+
+            // Also send detailed log with bounding box info
+            g_broadcaster->emit_log("INFO", "FaceDetector", log_msg, event.camera_id);
+        }
+    }
+}
+
+// Person recognition callback - broadcasts via EventBroadcaster
+void on_person_recognized(const PersonRecognitionEvent& event) {
+    std::string log_msg = "Person recognized: " + event.subject +
+                         ", similarity=" + std::to_string(event.similarity * 100.0) + "%" +
+                         ", confidence=" + std::to_string(event.detection_confidence * 100.0) + "%" +
+                         ", dwell_time=" + std::to_string(event.dwell_time_seconds) + "s" +
+                         (event.is_new_person ? " [NEW PERSON]" : "") +
+                         (event.is_new_at_camera ? " [NEW AT CAMERA]" : "");
+
+    LOG_INFO("main", "Camera " + event.camera_id + ": " + log_msg);
+
+    // Broadcast event to WebSocket clients via EventBroadcaster
+    if (g_broadcaster) {
+        g_broadcaster->emit_person_recognized(event);
+
+        // Also send detailed log
+        g_broadcaster->emit_log("INFO", "PersonTracker", log_msg, event.camera_id);
+    }
 }
 
 // Notify FastAPI that worker is ready
@@ -183,29 +293,70 @@ int main(int argc, char* argv[]) {
         manager_config.enable_metrics = true;
         manager_config.metrics_interval = 60.0;
 
+        // Create event broadcaster for real-time notifications
+        auto broadcaster = std::make_shared<EventBroadcaster>();
+        g_broadcaster = broadcaster;  // Store globally for PersonTracker callback
+
+        // Create PersonTracker with default config
+        PersonTrackerConfig person_tracking_config;
+        person_tracking_config.enable_cross_camera_tracking = true;
+        person_tracking_config.enable_persistence = true;
+        person_tracking_config.persistence_path = "./person_tracking.json";
+        person_tracking_config.enable_daily_reset = true;
+        person_tracking_config.daily_reset_hour = 0;
+        person_tracking_config.archive_path = "./tracking_archives";
+
+        LOG_INFO("main", "Creating PersonTracker for enterprise tracking");
+        auto person_tracker = std::make_unique<PersonTracker>(
+            person_tracking_config,
+            on_person_recognized
+        );
+
         // Create pipeline manager (shared ownership with API server)
         auto manager = std::make_shared<PipelineManager>(
             manager_config,
             on_state_changed,
-            on_error
+            on_error,
+            on_motion_detected,  // Motion callback - broadcasts events via EventBroadcaster
+            on_face_detected,    // Face callback - broadcasts events via EventBroadcaster
+            person_tracker.get()  // Pass person tracker for enterprise tracking
         );
+
+        // Attach broadcaster to pipeline manager
+        manager->set_event_broadcaster(broadcaster);
 
         // Start pipeline manager
         LOG_INFO("main", "Starting pipeline manager");
         // Manager starts when first camera is added via API
 
-        // Create and start API server
-        APIServer api_server(manager, host, port);
+        // Create and start HTTP API server on port 8081
+        APIServer api_server(manager, host, port, person_tracker.get());
 
         if (!api_server.start()) {
-            LOG_ERROR("main", "Failed to start API server");
+            LOG_ERROR("main", "Failed to start HTTP API server");
             return 1;
         }
 
-        LOG_INFO("main", "API server started successfully");
-        std::cout << "\n✅ API Server ready at http://" << host << ":" << port << "\n";
+        // Create and start WebSocket server on port 8082 (separate port for production)
+        int ws_port = 8082;
+        auto ws_server = std::make_shared<WebSocketServer>(host, ws_port, "/ws");
+        broadcaster->set_websocket_server(ws_server);
+
+        if (!ws_server->start()) {
+            LOG_ERROR("main", "Failed to start WebSocket server");
+            api_server.stop();
+            return 1;
+        }
+
+        LOG_INFO("main", "All servers started successfully");
+        std::cout << "\n✅ HTTP API ready at http://" << host << ":" << port << "\n";
         std::cout << "   Health check: http://" << host << ":" << port << "/health\n";
-        std::cout << "   List cameras: http://" << host << ":" << port << "/api/cameras\n" << std::endl;
+        std::cout << "   List cameras: http://" << host << ":" << port << "/api/cameras\n";
+        std::cout << "✅ WebSocket ready at ws://" << host << ":" << ws_port << "/ws\n";
+        std::cout << "   Real-time events streaming enabled\n" << std::endl;
+
+        // Emit worker started event
+        broadcaster->emit_worker_started();
 
         // Notify FastAPI if URL is provided
         if (!fastapi_url.empty()) {
@@ -221,7 +372,10 @@ int main(int argc, char* argv[]) {
         // Graceful shutdown
         std::cout << "\nShutting down gracefully..." << std::endl;
 
-        LOG_INFO("main", "Stopping API server");
+        LOG_INFO("main", "Stopping WebSocket server");
+        ws_server->stop();
+
+        LOG_INFO("main", "Stopping HTTP API server");
         api_server.stop();
 
         LOG_INFO("main", "Stopping all cameras");

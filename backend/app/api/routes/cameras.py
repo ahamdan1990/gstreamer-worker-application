@@ -3,13 +3,14 @@ Camera Management API Routes
 Manages cameras in database and controls them via Worker API
 """
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from uuid import UUID
 
 from app.db.base import get_db
 from app.models.camera import Camera
+from app.models.settings import GlobalSettings
 from app.schemas.camera import (
     CameraCreate,
     CameraUpdate,
@@ -34,13 +35,53 @@ def get_worker_client() -> WorkerClient:
     return WorkerClient(base_url=settings.WORKER_API_URL)
 
 
+async def get_global_similarity_threshold(db: AsyncSession) -> float:
+    """Get the global CompreFace similarity threshold from settings"""
+    try:
+        result = await db.execute(
+            select(GlobalSettings).where(GlobalSettings.setting_key == "compreface_recognition")
+        )
+        setting = result.scalar_one_or_none()
+
+        if setting and "similarity_threshold" in setting.setting_value:
+            return float(setting.setting_value["similarity_threshold"])
+    except Exception as e:
+        logger.warning(f"Failed to fetch global similarity threshold: {e}")
+
+    # Default fallback
+    return 0.88
+
+
 @router.get("/", response_model=List[CameraResponse])
 async def list_cameras(
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    worker: WorkerClient = Depends(get_worker_client)
 ):
-    """List all cameras"""
+    """List all cameras with fresh state from worker"""
     result = await db.execute(select(Camera))
     cameras = result.scalars().all()
+
+    # Sync state from worker for all cameras
+    try:
+        worker_cameras = await worker.list_cameras()
+        worker_state_map = {cam.camera_id: cam for cam in worker_cameras}
+
+        for camera in cameras:
+            if camera.camera_id in worker_state_map:
+                # Camera exists in worker - update state from worker
+                worker_cam = worker_state_map[camera.camera_id]
+                camera.state = worker_cam.state
+                camera.is_running = worker_cam.is_running
+            else:
+                # Camera not in worker - mark as ERROR
+                camera.state = "ERROR"
+                camera.is_running = False
+
+        # Commit the updated states
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to sync state from worker: {e}")
+
     return cameras
 
 
@@ -72,6 +113,12 @@ async def create_camera(
         camera_dict['motion_detection_enabled'] = motion_config.get('enabled', False)
         camera_dict['motion_detection_config'] = motion_config
 
+    # Handle face detection separately
+    face_config = camera_dict.pop('face_detection', None)
+    if face_config:
+        camera_dict['face_detection_enabled'] = face_config.get('enabled', False)
+        camera_dict['face_detection_config'] = face_config
+
     camera = Camera(**camera_dict)
     db.add(camera)
     await db.commit()
@@ -85,6 +132,15 @@ async def create_camera(
             from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
             worker_motion_config = WorkerMotionConfig(**camera.motion_detection_config)
 
+        # Build face detection config if enabled
+        worker_face_config = None
+        if camera.face_detection_enabled and camera.face_detection_config:
+            from app.services.worker_client import FaceDetectionConfig as WorkerFaceConfig
+            # Apply global similarity threshold
+            face_config_dict = camera.face_detection_config.copy()
+            face_config_dict['compreface_similarity_threshold'] = await get_global_similarity_threshold(db)
+            worker_face_config = WorkerFaceConfig(**face_config_dict)
+
         worker_config = WorkerCameraConfig(
             camera_id=camera.camera_id,
             rtsp_url=camera.rtsp_url,
@@ -95,7 +151,8 @@ async def create_camera(
             target_fps=camera.target_fps,
             enable_display=camera.enable_display,
             use_nvidia_decoder=camera.use_nvidia_decoder,
-            motion_detection=worker_motion_config
+            motion_detection=worker_motion_config,
+            face_detection=worker_face_config
         )
         # Use add_or_update for idempotent operation
         await worker.add_or_update_camera(worker_config)
@@ -160,6 +217,12 @@ async def update_camera(
         camera.motion_detection_enabled = motion_config.get('enabled', False)
         camera.motion_detection_config = motion_config
 
+    # Handle face detection separately
+    face_config = update_data.pop('face_detection', None)
+    if face_config is not None:
+        camera.face_detection_enabled = face_config.get('enabled', False)
+        camera.face_detection_config = face_config
+
     # Update other fields
     for field, value in update_data.items():
         setattr(camera, field, value)
@@ -177,6 +240,15 @@ async def update_camera(
             from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
             worker_motion_config = WorkerMotionConfig(**camera.motion_detection_config)
 
+        # Build face detection config if enabled
+        worker_face_config = None
+        if camera.face_detection_enabled and camera.face_detection_config:
+            from app.services.worker_client import FaceDetectionConfig as WorkerFaceConfig
+            # Apply global similarity threshold
+            face_config_dict = camera.face_detection_config.copy()
+            face_config_dict['compreface_similarity_threshold'] = await get_global_similarity_threshold(db)
+            worker_face_config = WorkerFaceConfig(**face_config_dict)
+
         worker_config = WorkerCameraConfig(
             camera_id=camera.camera_id,
             rtsp_url=camera.rtsp_url,
@@ -187,18 +259,18 @@ async def update_camera(
             target_fps=camera.target_fps,
             enable_display=camera.enable_display,
             use_nvidia_decoder=camera.use_nvidia_decoder,
-            motion_detection=worker_motion_config
+            motion_detection=worker_motion_config,
+            face_detection=worker_face_config
         )
 
-        # Update worker configuration (add or update)
+        # Update worker configuration (remove and re-add with new config)
         await worker.add_or_update_camera(worker_config)
         logger.info(f"Synced updated configuration to worker for camera {camera_id}")
 
-        # If camera was running, restart it to apply changes
+        # Restart camera if it was running before the update
         if was_running:
-            logger.info(f"Restarting camera {camera_id} to apply configuration changes")
-            await worker.stop_camera(camera_id)
             await worker.start_camera(camera_id)
+            logger.info(f"Restarted camera {camera_id} with new configuration")
             camera.is_running = True
             await db.commit()
 
@@ -265,8 +337,45 @@ async def start_camera(
             detail=f"Camera '{camera_id}' is disabled"
         )
 
-    # Start camera in worker
+    # Ensure camera exists in worker before starting
     try:
+        # Check if camera exists in worker by listing all cameras
+        worker_cameras = await worker.list_cameras()
+        camera_exists = any(cam.camera_id == camera_id for cam in worker_cameras)
+
+        if not camera_exists:
+            # Camera doesn't exist in worker, sync it first
+            logger.info(f"Camera {camera_id} not in worker, syncing first...")
+
+            # Build motion detection config if enabled
+            worker_motion_config = None
+            if camera.motion_detection_enabled and camera.motion_detection_config:
+                from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
+                worker_motion_config = WorkerMotionConfig(**camera.motion_detection_config)
+
+            # Build RTSP URL with embedded credentials for worker
+            rtsp_url = camera.rtsp_url
+            if camera.username and camera.password and "@" not in rtsp_url:
+                # Embed credentials in URL: rtsp://user:pass@host
+                rtsp_url = rtsp_url.replace("rtsp://", f"rtsp://{camera.username}:{camera.password}@")
+
+            worker_config = WorkerCameraConfig(
+                camera_id=camera.camera_id,
+                rtsp_url=rtsp_url,
+                username=camera.username,
+                password=camera.password,
+                protocols=camera.protocols,
+                latency_ms=camera.latency_ms,
+                target_fps=camera.target_fps,
+                enable_display=camera.enable_display,
+                use_nvidia_decoder=camera.use_nvidia_decoder,
+                motion_detection=worker_motion_config
+            )
+
+            await worker.add_or_update_camera(worker_config)
+            logger.info(f"Synced camera {camera_id} to worker")
+
+        # Now start the camera
         result = await worker.start_camera(camera_id)
         logger.info(f"Started camera {camera_id}")
 
@@ -340,8 +449,9 @@ async def get_camera_status(
     db: AsyncSession = Depends(get_db),
     worker: WorkerClient = Depends(get_worker_client)
 ):
-    """Get real-time camera status from worker with motion detection metrics"""
+    """Get camera status from cache (WebSocket-updated) with HTTP fallback"""
     from app.schemas.camera import CameraMetrics, MotionDetectionMetrics
+    from app.services.state_cache import camera_state_cache
 
     result = await db.execute(
         select(Camera).where(Camera.camera_id == camera_id)
@@ -354,7 +464,45 @@ async def get_camera_status(
             detail=f"Camera '{camera_id}' not found"
         )
 
-    # Get live status from worker
+    # Try cache first (updated in real-time via WebSocket)
+    cached_state = await camera_state_cache.get_camera(camera_id)
+
+    if cached_state:
+        logger.debug(f"Cache hit for {camera_id}")
+
+        # Parse metrics from cache
+        cached_metrics = cached_state.get('metrics', {})
+        motion_metrics = None
+
+        # Extract motion detection metrics if present
+        if 'frames_analyzed' in cached_metrics and cached_metrics['frames_analyzed'] > 0:
+            motion_metrics = MotionDetectionMetrics(
+                frames_analyzed=cached_metrics.get('frames_analyzed', 0),
+                motion_events_detected=cached_metrics.get('motion_events_detected', 0),
+                motion_detection_fps=cached_metrics.get('motion_detection_fps', 0.0),
+                last_motion_timestamp=cached_metrics.get('last_motion_timestamp')
+            )
+
+        # Build complete metrics
+        metrics = CameraMetrics(
+            uptime_seconds=cached_metrics.get('uptime_seconds', 0.0),
+            errors_count=cached_metrics.get('errors_count', 0),
+            reconnections=cached_metrics.get('reconnections', 0),
+            frames_displayed=cached_metrics.get('frames_displayed', 0),
+            motion=motion_metrics
+        )
+
+        return CameraStatus(
+            camera_id=camera.camera_id,
+            state=cached_state.get('state', camera.state),
+            is_running=cached_state.get('is_running', camera.is_running),
+            last_seen_at=camera.last_seen_at,
+            metrics=metrics
+        )
+
+    # Fallback to HTTP worker call if cache miss
+    logger.warning(f"Cache miss for {camera_id}, falling back to HTTP worker call")
+
     try:
         worker_status = await worker.get_camera_status(camera_id)
 
@@ -402,3 +550,201 @@ async def get_camera_status(
             last_seen_at=camera.last_seen_at,
             metrics=None
         )
+
+
+# Face Detection Configuration Endpoints
+
+@router.get("/{camera_id}/face-detection", response_model=dict)
+async def get_face_detection_config(
+    camera_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get face detection configuration for a camera"""
+    result = await db.execute(
+        select(Camera).where(Camera.camera_id == camera_id)
+    )
+    camera = result.scalar_one_or_none()
+
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Camera '{camera_id}' not found"
+        )
+
+    return {
+        "camera_id": camera_id,
+        "enabled": camera.face_detection_enabled or False,
+        "config": camera.face_detection_config or {}
+    }
+
+
+@router.put("/{camera_id}/face-detection", response_model=dict)
+async def update_face_detection_config(
+    camera_id: str,
+    enabled: bool = Form(...),
+    config: str = Form(...),  # JSON string
+    db: AsyncSession = Depends(get_db),
+    worker: WorkerClient = Depends(get_worker_client)
+):
+    """Update face detection configuration for a camera"""
+    import json
+
+    result = await db.execute(
+        select(Camera).where(Camera.camera_id == camera_id)
+    )
+    camera = result.scalar_one_or_none()
+
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Camera '{camera_id}' not found"
+        )
+
+    # Parse config JSON
+    try:
+        config_dict = json.loads(config)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid JSON for config"
+        )
+
+    # Track if camera was running before update
+    was_running = camera.is_running
+
+    # Update camera
+    camera.face_detection_enabled = enabled
+    camera.face_detection_config = config_dict
+
+    await db.commit()
+    await db.refresh(camera)
+
+    # Notify worker to reload configuration
+    try:
+        # Build motion detection config if enabled
+        worker_motion_config = None
+        if camera.motion_detection_enabled and camera.motion_detection_config:
+            from app.services.worker_client import MotionDetectionConfig as WorkerMotionConfig
+            worker_motion_config = WorkerMotionConfig(**camera.motion_detection_config)
+
+        # Build face detection config with new settings
+        worker_face_config = None
+        if camera.face_detection_enabled and camera.face_detection_config:
+            from app.services.worker_client import FaceDetectionConfig as WorkerFaceConfig
+            worker_face_config = WorkerFaceConfig(**camera.face_detection_config)
+
+        worker_config = WorkerCameraConfig(
+            camera_id=camera.camera_id,
+            rtsp_url=camera.rtsp_url,
+            username=camera.username,
+            password=camera.password,
+            protocols=camera.protocols,
+            latency_ms=camera.latency_ms,
+            target_fps=camera.target_fps,
+            enable_display=camera.enable_display,
+            use_nvidia_decoder=camera.use_nvidia_decoder,
+            motion_detection=worker_motion_config,
+            face_detection=worker_face_config
+        )
+
+        # Update worker configuration (remove and re-add with new config)
+        await worker.add_or_update_camera(worker_config)
+        logger.info(f"Synced face detection config to worker for camera {camera_id}")
+
+        # Restart camera if it was running before the update
+        if was_running:
+            await worker.start_camera(camera_id)
+            logger.info(f"Restarted camera {camera_id} with new face detection configuration")
+            camera.is_running = True
+            await db.commit()
+
+    except Exception as e:
+        logger.error(f"Failed to sync face detection config to worker: {e}")
+        # Don't fail the request - configuration is updated in database
+
+    return {
+        "camera_id": camera_id,
+        "enabled": camera.face_detection_enabled,
+        "config": camera.face_detection_config,
+        "message": "Face detection configuration updated successfully and synced to worker"
+    }
+
+
+@router.post("/{camera_id}/face-detection/reset", response_model=dict)
+async def reset_face_detection_config(
+    camera_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Reset face detection configuration to defaults"""
+    result = await db.execute(
+        select(Camera).where(Camera.camera_id == camera_id)
+    )
+    camera = result.scalar_one_or_none()
+
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Camera '{camera_id}' not found"
+        )
+
+    # Default face detection configuration (from cameras.json)
+    default_config = {
+        "model_path": "models/scrfd/scrfd_10g_bnkps.onnx",
+        "input_size": 640,
+        "confidence_threshold": 0.3,
+        "nms_threshold": 0.5,
+        "frame_skip": 2,
+        "max_frame_width": 1920,
+        "max_frame_height": 1080,
+        "min_face_size": 0.0003,
+        "max_faces": 30,
+        "required_frames": 1,
+        "cooldown_seconds": 0.3,
+        # Face Quality Filtering
+        "enable_frontal_face_filter": True,
+        "eye_tilt_threshold": 0.3,
+        "min_eye_distance": 0.01,
+        "nose_center_offset_threshold": 0.3,
+        "eye_to_face_ratio_min": 0.25,
+        "eye_to_face_ratio_max": 0.65,
+        "enable_min_face_size_filter": True,
+        "min_face_width": 80,
+        "min_face_height": 80,
+        # Hardware
+        "use_tensorrt": True,
+        "use_cuda": True,
+        "max_batch_size": 4,
+        "save_faces": True,
+        "save_path": "./face_crops",
+        "save_margin": 0.3,
+        "min_save_confidence": 0.2,
+        "max_saves_per_event": 5,
+        "enable_blur_detection": True,
+        "min_laplacian_variance": 250.0,
+        "blur_kernel_size": 3,
+        "motion_triggered_detection": True,
+        "motion_detection_cooldown": 1.5,
+        "enable_compreface": True,
+        "compreface_url": "http://localhost:8000",
+        "compreface_api_key": "318c40d0-2142-40b9-b8ec-59d12acc157d",
+        "compreface_subject": "unknown",
+        "compreface_timeout_ms": 8000,
+        "compreface_max_queue_size": 200,
+        "enable_visualization": True,
+        "draw_landmarks": True,
+        "draw_confidence": True,
+        "box_thickness": 2,
+        "font_scale": 0.5
+    }
+
+    camera.face_detection_config = default_config
+    camera.face_detection_enabled = True
+
+    await db.commit()
+    await db.refresh(camera)
+
+    return {
+        "camera_id": camera_id,
+        "config": camera.face_detection_config,
+        "message": "Face detection configuration reset to defaults"
+    }

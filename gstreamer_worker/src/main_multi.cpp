@@ -1,6 +1,7 @@
 #include "pipeline_manager.h"
 #include "config_loader.h"
 #include "logger.h"
+#include "person_tracker.h"
 
 #include <iostream>
 #include <csignal>
@@ -13,6 +14,14 @@ using namespace gstreamer_worker;
 
 // Global flag for graceful shutdown
 static std::atomic<bool> g_shutdown_requested(false);
+
+// Global person tracker (shared across all cameras for enterprise tracking)
+static std::unique_ptr<PersonTracker> g_person_tracker;
+
+// Accessor function for person tracker (allows FaceDetector to access it)
+PersonTracker* get_person_tracker() {
+    return g_person_tracker.get();
+}
 
 // Signal handler for Ctrl+C
 void signal_handler(int signal) {
@@ -36,20 +45,84 @@ void on_error(const std::string& camera_id, const std::string& error) {
 
 // Motion event callback
 void on_motion_detected(const MotionEvent& event) {
-    // Log motion event with detailed information
+    // Motion events are used to trigger face detection but not logged to reduce noise
+    // Uncomment below for debugging motion detection issues
+    // LOG_DEBUG("Motion", "Camera: " + event.camera_id + " - Area: " + std::to_string(event.motion_area) + " pixels");
+}
+
+// Face detection event callback
+void on_face_detected(const FaceEvent& event) {
+    // Log face detection event with detailed information
     std::stringstream ss;
     ss << "\n╔══════════════════════════════════════════════╗\n";
-    ss << "║         MOTION DETECTED                      ║\n";
+    ss << "║         🎭 FACE DETECTED                     ║\n";
     ss << "╠══════════════════════════════════════════════╣\n";
     ss << "║ Camera: " << std::left << std::setw(35) << event.camera_id << "║\n";
-    ss << "║ Motion Area: " << std::setw(30) << (std::to_string(event.motion_area) + " pixels") << "║\n";
-    ss << "║ Contours: " << std::setw(33) << event.num_contours << "║\n";
-    ss << "║ Confidence: " << std::setw(31) << std::fixed << std::setprecision(2) << (event.confidence * 100.0) << "%" << "║\n";
-    ss << "║ Bounding Box: [" << event.bounding_box.x << "," << event.bounding_box.y
-       << " " << event.bounding_box.width << "x" << event.bounding_box.height << "]" << std::setw(10) << "║\n";
+    ss << "║ Number of Faces: " << std::setw(27) << event.num_faces << "║\n";
+    ss << "║ Timestamp: " << std::setw(32) << std::fixed << std::setprecision(3) << event.timestamp << "║\n";
+    ss << "╠══════════════════════════════════════════════╣\n";
+
+    // List each detected face
+    for (int i = 0; i < event.num_faces && i < 5; i++) {  // Show max 5 faces
+        const auto& face = event.faces[i];
+        ss << "║ Face #" << (i + 1) << "                                     ║\n";
+        ss << "║   Confidence: " << std::setw(29) << std::fixed << std::setprecision(1) << (face.confidence * 100.0) << "%" << "║\n";
+        ss << "║   BBox: [" << std::fixed << std::setprecision(3)
+           << face.bbox.x << "," << face.bbox.y << " "
+           << face.bbox.width << "x" << face.bbox.height << "]";
+
+        // Pad to align with border
+        int bbox_len = ss.str().length() - ss.str().rfind("║   BBox:") - 8;
+        ss << std::string(std::max(0, 35 - bbox_len), ' ') << "║\n";
+
+        if (i < event.num_faces - 1 && i < 4) {
+            ss << "║                                              ║\n";
+        }
+    }
+
+    if (event.num_faces > 5) {
+        ss << "║   ... and " << (event.num_faces - 5) << " more faces               ║\n";
+    }
+
     ss << "╚══════════════════════════════════════════════╝\n";
 
-    LOG_INFO("MotionEvent", ss.str());
+    LOG_INFO("FaceEvent", ss.str());
+}
+
+// Person recognition event callback
+void on_person_recognized(const PersonRecognitionEvent& event) {
+    std::stringstream ss;
+    ss << "\n╔══════════════════════════════════════════════╗\n";
+    ss << "║      👤 PERSON RECOGNIZED                    ║\n";
+    ss << "╠══════════════════════════════════════════════╣\n";
+    ss << "║ Subject: " << std::left << std::setw(35) << event.subject << "║\n";
+    ss << "║ Camera: " << std::setw(36) << event.camera_id << "║\n";
+    ss << "║ Similarity: " << std::setw(32) << std::fixed << std::setprecision(1) << (event.similarity * 100.0) << "%" << "║\n";
+    ss << "║ Confidence: " << std::setw(32) << std::fixed << std::setprecision(1) << (event.detection_confidence * 100.0) << "%" << "║\n";
+    ss << "║ Dwell Time: " << std::setw(31) << std::fixed << std::setprecision(1) << event.dwell_time_seconds << "s" << "║\n";
+
+    if (event.is_new_person) {
+        ss << "║ Status: NEW PERSON                           ║\n";
+    } else if (event.is_new_at_camera) {
+        ss << "║ Status: NEW AT CAMERA                        ║\n";
+    }
+
+    if (!event.other_cameras.empty()) {
+        ss << "║ Also seen at: ";
+        std::string cameras_str;
+        for (size_t i = 0; i < event.other_cameras.size() && i < 2; i++) {
+            if (i > 0) cameras_str += ", ";
+            cameras_str += event.other_cameras[i];
+        }
+        if (event.other_cameras.size() > 2) {
+            cameras_str += "...";
+        }
+        ss << std::left << std::setw(28) << cameras_str << "║\n";
+    }
+
+    ss << "╚══════════════════════════════════════════════╝\n";
+
+    LOG_INFO("PersonEvent", ss.str());
 }
 
 void print_usage(const char* program_name) {
@@ -153,13 +226,14 @@ int main(int argc, char* argv[]) {
     try {
         PipelineManagerConfig manager_config;
         std::vector<CameraConfig> cameras;
+        PersonTrackerConfig person_tracking_config;
 
         // Load from config file or create single camera
         if (use_config_file) {
             // Load from JSON config
             std::cout << "Loading configuration from: " << config_file << std::endl;
 
-            if (!ConfigLoader::load_from_file(config_file, manager_config, cameras)) {
+            if (!ConfigLoader::load_from_file(config_file, manager_config, cameras, person_tracking_config)) {
                 std::cerr << "Error: Failed to load configuration file" << std::endl;
                 return 1;
             }
@@ -221,8 +295,29 @@ int main(int argc, char* argv[]) {
         std::cout << "========================================\n";
         std::cout << "\nPress Ctrl+C to stop\n" << std::endl;
 
+        // Create enterprise person tracker
+        if (person_tracking_config.enable_persistence || person_tracking_config.enable_cross_camera_tracking) {
+            std::cout << "\n========================================\n";
+            std::cout << "  Initializing Person Tracker\n";
+            std::cout << "========================================\n";
+
+            g_person_tracker = std::make_unique<PersonTracker>(
+                person_tracking_config,
+                on_person_recognized
+            );
+
+            std::cout << "========================================\n" << std::endl;
+        }
+
         // Create pipeline manager
-        PipelineManager manager(manager_config, on_state_changed, on_error, on_motion_detected);
+        PipelineManager manager(
+            manager_config,
+            on_state_changed,
+            on_error,
+            on_motion_detected,
+            on_face_detected,
+            g_person_tracker.get()  // Pass person tracker for enterprise tracking
+        );
 
         // Add all cameras
         auto add_results = manager.add_cameras(cameras);

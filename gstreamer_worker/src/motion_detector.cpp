@@ -281,18 +281,35 @@ bool MotionDetector::preprocess_frame_cuda(const cv::Mat& frame, cv::cuda::GpuMa
             d_gray_ = d_working;
         }
 
-        // Apply Gaussian blur
-        auto gaussian_filter = cv::cuda::createGaussianFilter(
-            d_gray_.type(), d_gray_.type(),
-            cv::Size(config_.blur_size, config_.blur_size), 0
-        );
-        gaussian_filter->apply(d_gray_, d_processed);
+        // Create and cache Gaussian filter (CRITICAL FIX: Issue #5)
+        // Only recreate if blur_size changed
+        if (!gaussian_filter_ || gaussian_filter_kernel_size_ != config_.blur_size) {
+            gaussian_filter_ = cv::cuda::createGaussianFilter(
+                d_gray_.type(), d_gray_.type(),
+                cv::Size(config_.blur_size, config_.blur_size), 0
+            );
+            gaussian_filter_kernel_size_ = config_.blur_size;
+            std::cout << "[MotionDetector:" << camera_id_ << "] Created cached Gaussian filter (kernel size: "
+                      << config_.blur_size << ")" << std::endl;
+        }
+        gaussian_filter_->apply(d_gray_, d_processed);
 
         return true;
 
     } catch (const cv::Exception& e) {
         std::cerr << "[MotionDetector:" << camera_id_ << "] CUDA preprocessing error: "
                   << e.what() << std::endl;
+
+        // CRITICAL FIX (Issue #3): Clean up GPU memory on exception to prevent leaks
+        try {
+            d_frame_.release();
+            d_gray_.release();
+            d_resized_.release();
+            d_blurred_.release();
+        } catch (...) {
+            // Ignore errors during cleanup
+        }
+
         return false;
     }
 }
@@ -338,15 +355,22 @@ bool MotionDetector::apply_background_subtraction_cuda(const cv::cuda::GpuMat& d
         double threshold = 255.0 * (1.0 - config_.sensitivity);
         cv::cuda::threshold(d_fg_mask, d_fg_mask, threshold, 255, cv::THRESH_BINARY);
 
-        // Morphological operations (download/upload for now, as CUDA morph ops are limited)
-        cv::Mat h_mask;
-        d_fg_mask.download(h_mask);
+        // CRITICAL FIX Issue #16: GPU morphological operations (eliminates 2-5ms CPU-GPU round trip)
+        // Create and cache morphology filters on first use
+        if (!morph_open_filter_ || !morph_close_filter_) {
+            morph_kernel_ = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+            morph_open_filter_ = cv::cuda::createMorphologyFilter(
+                cv::MORPH_OPEN, d_fg_mask.type(), morph_kernel_
+            );
+            morph_close_filter_ = cv::cuda::createMorphologyFilter(
+                cv::MORPH_CLOSE, d_fg_mask.type(), morph_kernel_
+            );
+        }
 
-        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-        cv::morphologyEx(h_mask, h_mask, cv::MORPH_OPEN, kernel);
-        cv::morphologyEx(h_mask, h_mask, cv::MORPH_CLOSE, kernel);
-
-        d_fg_mask.upload(h_mask);
+        // Apply morphological operations directly on GPU (zero CPU-GPU copies!)
+        cv::cuda::GpuMat d_temp;
+        morph_open_filter_->apply(d_fg_mask, d_temp);
+        morph_close_filter_->apply(d_temp, d_fg_mask);
 
         return true;
 
@@ -602,6 +626,147 @@ cv::cuda::GpuMat MotionDetector::apply_roi_cuda(const cv::cuda::GpuMat& d_frame)
     }
 
     return d_frame(cv::Rect(x, y, w, h));
+}
+
+bool MotionDetector::process_frame_cuda(const cv::cuda::GpuMat& d_frame) {
+    // If CUDA not available, fallback to CPU path
+    if (!using_cuda_) {
+        cv::Mat frame;
+        d_frame.download(frame);
+        return process_frame(frame);
+    }
+
+    // Frame skip optimization
+    if ((frame_counter_++ % config_.frame_skip) != 0) {
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.frames_skipped++;
+        }
+        return false;
+    }
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    // ===================================================================
+    // ALL OPERATIONS ON GPU - ZERO CPU COPIES UNTIL CONTOUR ANALYSIS
+    // ===================================================================
+
+    try {
+        // Convert to grayscale (GPU)
+        cv::cuda::cvtColor(d_frame, d_gray_, cv::COLOR_BGR2GRAY);
+
+        // Resize if needed (GPU)
+        if (config_.max_frame_width > 0 && config_.max_frame_height > 0) {
+            cv::cuda::resize(d_gray_, d_resized_,
+                           cv::Size(config_.max_frame_width, config_.max_frame_height));
+        } else {
+            d_resized_ = d_gray_;
+        }
+
+        // Apply ROI if configured (GPU)
+        cv::cuda::GpuMat d_roi_frame;
+        if (config_.roi.is_valid()) {
+            d_roi_frame = apply_roi_cuda(d_resized_);
+        } else {
+            d_roi_frame = d_resized_;
+        }
+
+        // Background subtraction based on algorithm (GPU)
+        if (config_.algorithm == MotionAlgorithm::MOG2_CUDA && cuda_bg_subtractor_) {
+            // CUDA-accelerated background subtraction
+            cuda_bg_subtractor_->apply(d_roi_frame, d_fg_mask_);
+        } else if (config_.algorithm == MotionAlgorithm::FRAME_DIFF) {
+            // Frame differencing (GPU)
+            apply_frame_difference_cuda(d_roi_frame, d_fg_mask_);
+        } else {
+            // Fallback to CPU algorithm if needed
+            cv::Mat roi_frame, fg_mask;
+            d_roi_frame.download(roi_frame);
+            apply_background_subtraction(roi_frame, fg_mask);
+            d_fg_mask_.upload(fg_mask);
+        }
+
+        // Blur (on GPU, with cached filter)
+        if (config_.blur_size > 0) {
+            if (!gaussian_filter_ ||
+                gaussian_filter_kernel_size_ != config_.blur_size) {
+
+                gaussian_filter_ = cv::cuda::createGaussianFilter(
+                    d_gray_.type(),
+                    d_gray_.type(),
+                    cv::Size(config_.blur_size, config_.blur_size),
+                    0
+                );
+                gaussian_filter_kernel_size_ = config_.blur_size;
+            }
+
+            gaussian_filter_->apply(d_gray_, d_blurred_);
+        } else {
+            d_blurred_ = d_gray_;
+        }
+
+
+        // ===================================================================
+        // DOWNLOAD ONLY THE TINY MASK (~640x480 = 300KB) FOR CONTOUR ANALYSIS
+        // This is the ONLY CPU copy - much smaller than full frame!
+        // ===================================================================
+        cv::Mat fg_mask;
+        d_fg_mask_.download(fg_mask);
+
+        // Threshold if needed
+        if (!fg_mask.empty() && config_.sensitivity < 1.0) {
+            double threshold_value = 255.0 * (1.0 - config_.sensitivity);
+            cv::threshold(fg_mask, fg_mask, threshold_value, 255, cv::THRESH_BINARY);
+        }
+
+        // Analyze contours (small CPU work on tiny mask)
+        int motion_area = 0;
+        MotionROI bbox;
+        int num_contours = analyze_motion(fg_mask, motion_area, bbox);
+
+        bool has_motion = (num_contours > 0 && motion_area >= config_.min_contour_area);
+
+        // Trigger event if needed
+        if (should_trigger_event(has_motion)) {
+            MotionEvent event;
+            event.camera_id = camera_id_;
+            event.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count() / 1000.0;
+            event.motion_area = motion_area;
+            event.num_contours = num_contours;
+            event.bounding_box = bbox;
+
+            // Calculate confidence based on motion area
+            int total_area = d_resized_.rows * d_resized_.cols;
+            event.confidence = static_cast<double>(motion_area) / total_area;
+
+            if (on_motion_) {
+                on_motion_(event);
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                stats_.motion_events++;
+            }
+
+        }
+
+        // Update performance statistics
+        auto end = std::chrono::high_resolution_clock::now();
+        double processing_time = std::chrono::duration<double, std::milli>(end - start).count();
+        update_statistics(processing_time);
+
+        return has_motion;
+
+    } catch (const cv::Exception& e) {
+        std::cerr << "[MotionDetector:" << camera_id_ << "] CUDA processing error: "
+                  << e.what() << std::endl;
+        // Fallback to CPU on error
+        cv::Mat frame;
+        d_frame.download(frame);
+        return process_frame(frame);
+    }
 }
 
 } // namespace gstreamer_worker

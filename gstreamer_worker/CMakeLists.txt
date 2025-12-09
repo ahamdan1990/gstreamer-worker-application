@@ -1,10 +1,22 @@
 cmake_minimum_required(VERSION 3.16)
-project(GStreamerWorker VERSION 1.0.0 LANGUAGES CXX)
+
+# Set CUDA compiler and toolkit before project declaration
+set(CMAKE_CUDA_COMPILER /usr/local/cuda-12.6/bin/nvcc)
+set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda-12.6)
+set(CMAKE_CUDA_COMPILER_TOOLKIT_ROOT /usr/local/cuda-12.6)
+
+project(GStreamerWorker VERSION 1.0.0 LANGUAGES CXX CUDA)
 
 # C++ Standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# CUDA Standard and Architecture
+set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
+set(CMAKE_CUDA_ARCHITECTURES 75)  # T1000 is Turing architecture (SM 75)
 
 # Compiler flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
@@ -25,12 +37,20 @@ pkg_check_modules(GSTREAMER REQUIRED
 # GLib
 pkg_check_modules(GLIB REQUIRED glib-2.0>=2.56)
 
+# Cairo for overlay graphics
+pkg_check_modules(CAIRO REQUIRED cairo)
+
+# libcurl for HTTP requests (CompreFace client)
+find_package(CURL REQUIRED)
+
 # OpenCV with CUDA support
 find_package(OpenCV 4.0 REQUIRED
     COMPONENTS
         core
         imgproc
+        imgcodecs
         video
+        highgui
         cudabgsegm
         cudaimgproc
         cudawarping
@@ -56,6 +76,46 @@ endif()
 # Threads
 find_package(Threads REQUIRED)
 
+# ONNX Runtime (for face detection)
+set(ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime")
+set(ONNXRUNTIME_INCLUDE_DIRS "${ONNXRUNTIME_ROOT}/include")
+set(ONNXRUNTIME_LIBRARIES "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so")
+
+if(EXISTS "${ONNXRUNTIME_INCLUDE_DIRS}" AND EXISTS "${ONNXRUNTIME_LIBRARIES}")
+    message(STATUS "ONNX Runtime found: ${ONNXRUNTIME_ROOT}")
+    message(STATUS "  Include: ${ONNXRUNTIME_INCLUDE_DIRS}")
+    message(STATUS "  Library: ${ONNXRUNTIME_LIBRARIES}")
+else()
+    message(WARNING "ONNX Runtime not found in third_party/onnxruntime")
+    message(WARNING "Face detection will not be available")
+endif()
+
+# TensorRT (for native GPU inference - Phase 3 optimization)
+set(TENSORRT_ROOT "/usr/local/TensorRT" CACHE PATH "TensorRT root directory")
+if(NOT EXISTS "${TENSORRT_ROOT}")
+    set(TENSORRT_ROOT "/usr" CACHE PATH "TensorRT root directory" FORCE)
+endif()
+
+set(TENSORRT_INCLUDE_DIRS "${TENSORRT_ROOT}/include")
+set(TENSORRT_LIBRARIES
+    "${TENSORRT_ROOT}/lib/libnvinfer.so"
+    "${TENSORRT_ROOT}/lib/libnvonnxparser.so"
+    "${TENSORRT_ROOT}/lib/libnvinfer_plugin.so"
+)
+
+# Check if TensorRT is available
+if(EXISTS "${TENSORRT_INCLUDE_DIRS}/NvInfer.h")
+    message(STATUS "TensorRT found: ${TENSORRT_ROOT}")
+    message(STATUS "  Include: ${TENSORRT_INCLUDE_DIRS}")
+    message(STATUS "  Libraries: libnvinfer, libnvonnxparser")
+    set(TENSORRT_FOUND TRUE)
+    add_definitions(-DUSE_TENSORRT)
+else()
+    message(WARNING "TensorRT not found at ${TENSORRT_ROOT}")
+    message(WARNING "Falling back to ONNX Runtime with TensorRT EP")
+    set(TENSORRT_FOUND FALSE)
+endif()
+
 # Enable FetchContent for downloading dependencies
 include(FetchContent)
 
@@ -76,13 +136,30 @@ FetchContent_Declare(httplib
 )
 FetchContent_MakeAvailable(httplib)
 
+# IXWebSocket (WebSocket client/server library)
+FetchContent_Declare(ixwebsocket
+    GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
+    GIT_TAG v11.4.5
+)
+set(USE_TLS ON CACHE BOOL "Enable TLS support for IXWebSocket")
+set(USE_ZLIB ON CACHE BOOL "Enable ZLIB compression for IXWebSocket")
+FetchContent_MakeAvailable(ixwebsocket)
+
 # Include directories
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${GSTREAMER_INCLUDE_DIRS}
     ${GLIB_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
+    ${ONNXRUNTIME_INCLUDE_DIRS}
+    ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+    /usr/local/cuda-12.6/include
 )
+
+# Add TensorRT includes if available
+if(TENSORRT_FOUND)
+    include_directories(${TENSORRT_INCLUDE_DIRS})
+endif()
 
 # Link directories
 link_directories(
@@ -98,6 +175,21 @@ set(SOURCES
     src/config_loader.cpp
     src/logger.cpp
     src/motion_detector.cpp
+    src/face_detector.cpp
+    src/compreface_client.cpp
+    src/person_tracker.cpp
+    src/websocket_server.cpp
+    src/event_broadcaster.cpp
+)
+
+# TensorRT source (only if TensorRT is available)
+if(TENSORRT_FOUND)
+    list(APPEND SOURCES src/tensorrt_engine.cpp)
+endif()
+
+# CUDA kernel files for zero-copy GPU preprocessing
+set(CUDA_SOURCES
+    src/cuda_kernels.cu
 )
 
 # API Server sources
@@ -115,17 +207,45 @@ set(HEADERS
     include/types.h
     include/api_server.h
     include/motion_detector.h
+    include/face_detector.h
+    include/compreface_client.h
+    include/websocket_server.h
+    include/event_broadcaster.h
+    include/callback_queue.h
+    include/cuda_kernels.h
 )
 
+# TensorRT header (only if TensorRT is available)
+if(TENSORRT_FOUND)
+    list(APPEND HEADERS include/tensorrt_engine.h)
+endif()
+
 # Create library
-add_library(gstreamer_worker_lib STATIC ${SOURCES} ${HEADERS})
+add_library(gstreamer_worker_lib STATIC ${SOURCES} ${CUDA_SOURCES} ${HEADERS})
+
+# Set CUDA compilation flags
+set_target_properties(gstreamer_worker_lib PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
+
 target_link_libraries(gstreamer_worker_lib
     ${GSTREAMER_LIBRARIES}
     ${GLIB_LIBRARIES}
+    ${CAIRO_LIBRARIES}
     ${OpenCV_LIBS}
+    ${ONNXRUNTIME_LIBRARIES}
+    CURL::libcurl
     Threads::Threads
     nlohmann_json::nlohmann_json
+    ixwebsocket
+    cudart
 )
+
+# Link TensorRT if available
+if(TENSORRT_FOUND)
+    target_link_libraries(gstreamer_worker_lib ${TENSORRT_LIBRARIES})
+endif()
 
 # Main executable (single camera)
 add_executable(gstreamer_worker src/main.cpp)
@@ -149,7 +269,7 @@ target_link_libraries(gstreamer_worker_multi
     nlohmann_json::nlohmann_json
 )
 
-# API Server executable (with REST API)
+# API Server executable (with REST API + WebSocket support)
 add_executable(gstreamer_worker_api src/main_api.cpp ${API_SOURCES})
 target_link_libraries(gstreamer_worker_api
     gstreamer_worker_lib
@@ -159,6 +279,7 @@ target_link_libraries(gstreamer_worker_api
     Threads::Threads
     nlohmann_json::nlohmann_json
     httplib::httplib
+    ixwebsocket
 )
 
 # Install targets
