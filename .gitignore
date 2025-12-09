@@ -61,3 +61,8 @@ gstreamer_worker/third_party/onnxruntime
 backend/engine_cache
 backend/face_crops
 backend/logs
+
+gstreamer_worker/build
+
+frontend-ui/.next/
+.next/
