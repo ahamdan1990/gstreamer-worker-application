@@ -1,7 +1,27 @@
 {
-  "persons": [],
-  "timestamp": 1765265680,
-  "total_events": 22,
-  "total_persons_tracked": 2,
+  "persons": [
+    {
+      "avg_similarity": 0.886900007724762,
+      "camera_appearances": {
+        "Balcony": {
+          "avg_confidence": 0.886900007724762,
+          "camera_id": "Balcony",
+          "detection_count": 1,
+          "dwell_time_seconds": 0.0,
+          "first_seen": 1765266511,
+          "last_seen": 1765266511
+        }
+      },
+      "first_seen_global": 1765266511,
+      "last_seen_global": 1765266511,
+      "last_similarity": 0.886900007724762,
+      "subject": "ashamdan1990@gmail.com",
+      "total_detections": 1,
+      "total_dwell_time_seconds": 0.0
+    }
+  ],
+  "timestamp": 1765266736,
+  "total_events": 23,
+  "total_persons_tracked": 3,
   "version": "1.0"
 }

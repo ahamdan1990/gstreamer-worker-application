@@ -52,3 +52,12 @@ venv/
 backend/venv/
 .env/
 frontend-ui/node_modules/
+
+gstreamer_worker/face_crops
+gstreamer_worker/engine_cache
+gstreamer_worker/onnxruntime-linux-x64-gpu-1.20.1.tgz
+gstreamer_worker/third_party/onnxruntime
+
+backend/engine_cache
+backend/face_crops
+backend/logs

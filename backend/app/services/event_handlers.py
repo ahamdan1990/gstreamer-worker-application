@@ -463,11 +463,12 @@ class EventHandler:
                     existing_event.confidence = confidence  # Update with recognition similarity if recognized
                     existing_event.recognition_attempts = recognition_attempts
                     existing_event.tracking_duration_seconds = tracking_duration
+                    existing_event.image_url = image_url  # Update with latest face crop image
                     existing_event.updated_at = datetime.utcnow()
                     existing_event.worker_metadata = data  # Update full event data
 
                     logger.info(f"Updated face detection event for tracking_id {tracking_id[:8]}... "
-                              f"(subject: {subject}, recognized: {is_recognized})")
+                              f"(subject: {subject}, recognized: {is_recognized}, image: {image_url})")
                 else:
                     # Create new event
                     face_event = FaceDetectionEvent(
